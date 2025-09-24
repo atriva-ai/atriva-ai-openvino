@@ -1,6 +1,7 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from app.services import run_object_detection
 from app.models import model_manager, ACCELERATORS, MODEL_NAME_MAPPING
+from app.model_capabilities import get_detailed_model_info, get_available_model_types, get_available_objects as get_capability_objects, get_model_capabilities
 from app.shared_data import (
     list_available_cameras, 
     get_frame_info, 
@@ -21,6 +22,11 @@ ARCHITECTURE = "openvino"
 async def list_available_models():
     """Returns a list of all available models."""
     return {"available_models": model_manager.list_models()}
+
+@router.get("/objects")
+async def list_available_objects():
+    """Returns a list of all available object types for detection."""
+    return {"available_objects": get_capability_objects()}
 
 @router.post("/inference/detection")
 def detect_objects(object_name: str, image: UploadFile = File(...)):
@@ -90,7 +96,9 @@ async def get_camera_frame_by_index(camera_id: str, frame_index: int):
 @router.get("/model/info")
 async def get_model_info():
     return {
-        "models": list(MODEL_NAME_MAPPING.keys()),
+        "models": get_detailed_model_info(),
+        "model_types": get_available_model_types(),
+        "objects": get_capability_objects(),  # Legacy compatibility
         "accelerators": ACCELERATORS,
         "architecture": ARCHITECTURE
     }
@@ -113,6 +121,37 @@ async def load_model(model_name: str, accelerator: Optional[str] = "cpu32"):
             "architecture": ARCHITECTURE,
             "status": "loaded"
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- Direct Inference API ---
+@router.post("/inference/direct")
+async def direct_inference(model_name: str, image: UploadFile = File(...)):
+    """Run direct inference using a specific model."""
+    if model_name not in MODEL_NAME_MAPPING:
+        raise HTTPException(status_code=400, detail=f"Unknown model: {model_name}")
+    
+    try:
+        from app.services import preprocess_image, run_inference
+        
+        image_bytes = image.file.read()
+        
+        # Load model and get input shape
+        compiled_model, input_shape = model_manager.load_model(model_name)
+        
+        # Preprocess image
+        preprocessed_image = preprocess_image(image_bytes, input_shape)
+        
+        # Run inference
+        output = run_inference(preprocessed_image, compiled_model)
+        
+        return {
+            "model_name": model_name,
+            "input_shape": input_shape,
+            "output_shape": output.shape if hasattr(output, 'shape') else None,
+            "output": output.tolist() if hasattr(output, 'tolist') else str(output)
+        }
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -201,3 +240,18 @@ async def start_background_inference(camera_id: str, model_name: str, accelerato
         "architecture": ARCHITECTURE,
         "status": "background_inference_started"
     }
+
+# --- Model Capabilities API ---
+@router.get("/models/{model_name}/capabilities")
+async def get_model_capabilities_endpoint(model_name: str):
+    """Get detailed capabilities for a specific model."""
+    if model_name not in MODEL_NAME_MAPPING:
+        raise HTTPException(status_code=404, detail=f"Model not found: {model_name}")
+    
+    capabilities = get_model_capabilities(model_name)
+    return {
+        "model_name": model_name,
+        "capabilities": capabilities,
+        "architecture": ARCHITECTURE
+    }
+

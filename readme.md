@@ -14,23 +14,34 @@ atriva-ai-openvino/
 │   ├── routes.py         # API route definitions
 │   ├── services.py       # AI model processing logic
 │   ├── models.py         # Data models and schemas
-│   ├── utils.py          # Utility functions
+│   ├── model_capabilities.py  # Model capabilities and metadata
+│   ├── shared_data.py    # Shared data utilities
 │── models/               # Pretrained OpenVINO models
-│── static/               # Static files (if needed)
-│── tests/                # Unit and integration tests
+│   ├── yolov8n/          # YOLOv8n object detection model
+│   ├── lprnet/           # LPRNet license plate recognition model
+│   └── vehicle_tracking/ # Vehicle detection and tracking model
+│── tests/                # Comprehensive testing suite
+│   ├── test_runner.py    # Main test runner
+│   ├── test_yolov8n.py   # YOLOv8n specific tests
+│   ├── test_lprnet.py    # LPRNet specific tests
+│   ├── test_vehicle_tracking.py  # Vehicle tracking tests
+│   └── setup.sh          # Test environment setup
 │── main.py               # Entry point for FastAPI
+│── config.py             # Configuration settings
 │── requirements.txt      # Python dependencies
 │── Dockerfile            # Docker configuration
-│── .dockerignore         # Ignore unnecessary files in Docker builds
 │── README.md             # Project documentation
-│── .gitignore            # Ignore unnecessary files in Git
 ```
 
 ## **⚡ Features**
 ✅ FastAPI-based AI API  
 ✅ OpenVINO optimization for inference  
 ✅ Dockerized for easy deployment  
-✅ Includes unit tests  
+✅ Comprehensive testing suite  
+✅ Multiple AI models supported:
+   - YOLOv8n Object Detection
+   - LPRNet License Plate Recognition
+   - Vehicle Detection and Tracking  
 
 ## **🔧 Setup & Installation**
 
@@ -75,8 +86,40 @@ Now, visit:
 
 ## **🧪 Running Tests**
 ```sh
-pytest tests/
+# Setup test environment
+cd tests
+./setup.sh
+source venv/bin/activate
+
+# Download models
+python test_runner.py --download-models
+
+# Run all tests
+python test_runner.py --model all --input test_images/sample.jpg
+
+# Test specific model
+python test_yolov8n.py --input test_images/sample_cars.jpg
 ```
+
+## **🤖 Available Models**
+
+### **YOLOv8n Object Detection**
+- **Purpose**: Detect 80 different object classes
+- **Input**: 640×640 RGB images
+- **Output**: Bounding boxes with class labels and confidence scores
+- **Use Cases**: General object detection, surveillance, autonomous vehicles
+
+### **LPRNet License Plate Recognition**
+- **Purpose**: Recognize license plate text
+- **Input**: 24×94 RGB images (license plate regions)
+- **Output**: Recognized text with character-level confidence
+- **Use Cases**: Parking management, traffic enforcement, access control
+
+### **Vehicle Detection and Tracking**
+- **Purpose**: Detect and track vehicles across video frames
+- **Input**: 416×416 RGB images
+- **Output**: Vehicle bounding boxes with unique track IDs
+- **Use Cases**: Traffic monitoring, parking analytics, fleet management
 
 ## **📜 License**
 This project is licensed under the **MIT License**.
