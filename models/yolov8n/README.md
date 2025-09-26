@@ -1,83 +1,92 @@
 # YOLOv8n Model Setup
 
+## Model Sources
+
+### Fine-tuned Models (Primary)
+✅ **Using**: Fine-tuned YOLOv8n models from [shreydan/yolo-object-detection-kitti](https://github.com/shreydan/yolo-object-detection-kitti/tree/main)
+
+These models are specifically fine-tuned for object detection tasks and provide better performance than the base Ultralytics models.
+
+**Source**: [KITTI Object Detection with YOLOv8](https://github.com/shreydan/yolo-object-detection-kitti/tree/main)
+
+### Original Ultralytics Models (Backup)
+📁 **Location**: `ultralytics/` folder
+
+The original Ultralytics YOLOv8 models are stored in the `ultralytics/` subfolder for reference and fallback purposes.
+
 ## Current Status
 
-✅ **Downloaded**: `yolov8n.pt` (6.5MB PyTorch model)  
-⚠️ **Conversion Issue**: PyTorch doesn't support Python 3.13 yet
+✅ **Downloaded**: `yolov8n.pt` (Fine-tuned PyTorch model)  
+✅ **Converted**: `yolov8n.xml` and `yolov8n.bin` (OpenVINO format)  
+✅ **Ready**: Model is ready for inference
 
-## Solution Options
+## Model Files
 
-### Option 1: Use Python 3.11 or 3.12 (Recommended)
-
-Create a new virtual environment with Python 3.11 or 3.12:
-
-```bash
-# Using pyenv (if available)
-pyenv install 3.11.9
-pyenv virtualenv 3.11.9 openvino-conversion
-pyenv activate openvino-conversion
-
-# Or using conda
-conda create -n openvino-conversion python=3.11
-conda activate openvino-conversion
-
-# Install required packages
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-pip install ultralytics
-pip install openvino
-
-# Convert the model
-cd /path/to/models/yolov8n
-python convert_to_openvino.py
-```
-
-### Option 2: Manual Conversion Using Docker
-
-```bash
-# Create a Docker container with Python 3.11
-docker run -it --rm -v $(pwd):/workspace python:3.11 bash
-
-# Inside the container:
-cd /workspace
-pip install torch torchvision ultralytics openvino
-python convert_to_openvino.py
-```
-
-### Option 3: Use Pre-converted Models
-
-Download from a working source:
-
-```bash
-# Try these alternative URLs:
-curl -L -o yolov8n.onnx "https://github.com/ultralytics/assets/releases/download/v8.1.0/yolov8n.onnx"
-
-# Then convert ONNX to OpenVINO using system tools:
-mo --input_model yolov8n.onnx --output_dir . --model_name yolov8n
-```
-
-### Option 4: Temporary Mock Model (For Testing Only)
-
-If you just need to test the infrastructure, you can create minimal mock files:
-
-```bash
-# Create minimal XML file (not a real model)
-echo '<?xml version="1.0" ?><net><layers></layers></net>' > yolov8n.xml
-echo 'mock' > yolov8n.bin
-```
-
-## Files in this directory
-
-- `yolov8n.pt` - Downloaded PyTorch model (6.5MB)
-- `model.json` - Model configuration
-- `convert_to_openvino.py` - Conversion script (requires PyTorch)
-- `download_and_convert.py` - Download and conversion script
-
-## Next Steps
-
-1. Choose one of the options above
-2. Convert the PyTorch model to OpenVINO format
-3. Test the model loading in the test suite
-
-The conversion should create:
+### Primary Model Files
+- `yolov8n.pt` - Fine-tuned PyTorch model
 - `yolov8n.xml` - OpenVINO model structure
 - `yolov8n.bin` - OpenVINO model weights
+- `model.json` - Model configuration
+- `metadata.yaml` - Model metadata
+
+### Backup/Reference Files
+- `ultralytics/` - Original Ultralytics models
+  - `yolov8n.pt` - Original Ultralytics PyTorch model
+  - `yolov8n.xml` - Original OpenVINO structure
+  - `yolov8n.bin` - Original OpenVINO weights
+
+## Code Organization Suggestion
+
+⚠️ **Recommended**: Move Python scripts out of the model directory
+
+The model directory should contain only model files. Consider moving Python scripts to:
+
+```
+scripts/
+├── convert_to_openvino.py
+├── download_and_convert.py
+├── create_model_json.py
+└── model_utils.py
+
+models/
+├── yolov8n/
+│   ├── yolov8n.pt
+│   ├── yolov8n.xml
+│   ├── yolov8n.bin
+│   ├── model.json
+│   ├── metadata.yaml
+│   └── ultralytics/
+└── yolov8s/
+    └── ...
+```
+
+## Usage
+
+### Testing the Model
+```bash
+# Test with PyTorch
+python tests/test_yolov8_pt.py --input test_images/sample.jpg --size n
+
+# Test with OpenVINO
+python tests/test_yolov8_openvino.py --input test_images/sample.jpg --size n
+```
+
+### Model Conversion (if needed)
+```bash
+# From scripts directory
+python scripts/convert_to_openvino.py --size n
+```
+
+## Performance Benefits
+
+The fine-tuned models from the KITTI dataset provide:
+- Better accuracy on object detection tasks
+- Optimized for real-world scenarios
+- Improved performance on vehicle and pedestrian detection
+- Enhanced robustness compared to base models
+
+## References
+
+- **Fine-tuned Models**: [shreydan/yolo-object-detection-kitti](https://github.com/shreydan/yolo-object-detection-kitti/tree/main)
+- **Original YOLOv8**: [Ultralytics YOLOv8](https://github.com/ultralytics/ultralytics)
+- **KITTI Dataset**: [KITTI Vision Benchmark Suite](https://www.cvlibs.net/datasets/kitti/index.php)
