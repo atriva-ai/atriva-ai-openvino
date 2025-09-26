@@ -14,5 +14,8 @@ MODEL_URLS = {
         "cpui8": "https://storage.openvinotoolkit.org/repositories/open_model_zoo/2023.0/models_bin/1/face-detection-retail-0005/FP16-INT8/",
         "cpu16": "https://storage.openvinotoolkit.org/repositories/open_model_zoo/2023.0/models_bin/1/face-detection-retail-0005/FP16/",
         "cpu32": "https://storage.openvinotoolkit.org/repositories/open_model_zoo/2023.0/models_bin/1/face-detection-retail-0005/FP32/"
+    },
+    "yolov8n": {
+        "cpu32": "local"  # Local model files
     }
 }

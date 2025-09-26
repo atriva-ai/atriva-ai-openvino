@@ -2,6 +2,7 @@ import os
 import shutil
 import requests
 import zipfile
+import json
 from openvino.runtime import Core
 from config import MODEL_DIR, MODEL_URLS
 
@@ -11,7 +12,8 @@ ACCELERATORS = ["cpui8", "cpu16", "cpu32"]
 # Mapping user-friendly model names to actual OpenVINO models
 MODEL_NAME_MAPPING = {
     "person": "person-detection-retail-0013",
-    "face": "face-detection-retail-0005"
+    "face": "face-detection-retail-0005",
+    "yolov8n": "yolov8n"
 }
 
 # OpenVINO Inference Engine Initialization
@@ -67,6 +69,10 @@ class ModelManager:
         if model_name not in MODEL_URLS:
             raise ValueError(f"❌ Unknown model: {requested_model}. Available: {list(MODEL_NAME_MAPPING.keys())}")
 
+        # Handle local YOLOv8 models
+        if model_name == "yolov8n":
+            return self._load_yolov8_model(model_name)
+        
         """Load a model from local storage, or download if missing."""
         model_folder = os.path.join(self.MODEL_DIR, model_name)
         xml_path = os.path.join(model_folder, f"{model_name}.xml")
@@ -101,6 +107,54 @@ class ModelManager:
             return compiled_model, input_shape
         else:
             raise Exception(f"❌ Failed to download {model_name}.")
+
+    def _load_yolov8_model(self, model_name):
+        """Load YOLOv8 model from local files."""
+        # YOLOv8 models are stored in models/yolov8n/ directory
+        model_folder = os.path.join(self.BASE_DIR, model_name)
+        xml_path = os.path.join(model_folder, f"{model_name}.xml")
+        bin_path = os.path.join(model_folder, f"{model_name}.bin")
+        
+        if not os.path.exists(xml_path) or not os.path.exists(bin_path):
+            raise Exception(f"❌ YOLOv8 model files not found in {model_folder}")
+        
+        print(f"✅ Loading YOLOv8 model from {model_folder}")
+        
+        # Load the network model (XML & BIN)
+        model = self.ie.read_model(model=xml_path)
+        
+        # Compile the model for inference
+        compiled_model = self.ie.compile_model(model=model, device_name="CPU")
+        print(f"✅ YOLOv8 model compiled successfully on device: CPU")
+        
+        input_shape = compiled_model.input(0).shape  # Expected shape (N, C, H, W)
+        return compiled_model, input_shape
+
+    def get_model_config(self, requested_model):
+        """Get model configuration including classes and thresholds."""
+        model_name = MODEL_NAME_MAPPING.get(requested_model, requested_model)
+        
+        if model_name == "yolov8n":
+            # Load YOLOv8 configuration from model.json
+            config_path = os.path.join(self.BASE_DIR, model_name, "model.json")
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                return config
+            else:
+                # Fallback configuration
+                return {
+                    "classes": ["Car", "Pedestrian", "Van", "Cyclist", "Truck", "Misc", "Tram", "Person_sitting"],
+                    "confidence_threshold": 0.25,
+                    "nms_threshold": 0.45
+                }
+        
+        # For other models, return default configuration
+        return {
+            "classes": ["object"],
+            "confidence_threshold": 0.3,
+            "nms_threshold": 0.5
+        }
 
     def list_models(self):
         """List all available models for each accelerator."""
