@@ -60,3 +60,23 @@ runs/
 
 # Python version file
 .python-version
+
+# Large model files
+*.pt
+*.bin
+*.xml
+
+# Sample/placeholder files
+tests/test_images/sample_*
+
+# Virtual environments
+py311-venv/
+venv/
+.env/
+
+# Test outputs
+output/
+runs/
+
+# Python version file
+.python-version
