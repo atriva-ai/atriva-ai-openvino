@@ -43,3 +43,20 @@ runs/
 
 # Python version file
 .python-version
+
+# Large model files
+*.pt
+*.bin
+*.xml
+
+# Virtual environments
+py311-venv/
+venv/
+.env/
+
+# Test outputs
+output/
+runs/
+
+# Python version file
+.python-version
