@@ -32,3 +32,14 @@ dist/
 .env
 
 .DS_Store
+# Virtual environments
+py311-venv/
+venv/
+.env/
+
+# Test outputs
+output/
+runs/
+
+# Python version file
+.python-version
