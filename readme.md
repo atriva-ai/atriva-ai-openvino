@@ -58,7 +58,21 @@ source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
 pip install -r requirements.txt
 ```
 
-### **3️⃣ Run the API Locally**
+### **3️⃣ Download AI Models**
+```sh
+# Download all required model files
+cd tests
+python test_runner.py --download-models
+
+# Or download individual models
+python test_runner.py --model yolov8n --download
+python test_runner.py --model lprnet --download
+python test_runner.py --model vehicle_tracking --download
+```
+
+**📝 Important**: Model binary files (.pt, .bin, .xml) are not included in the repository due to size constraints. They will be downloaded automatically when needed.
+
+### **4️⃣ Run the API Locally**
 ```sh
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
@@ -78,6 +92,67 @@ docker run -d -p 8000:8000 --name ai-openvino-container atriva-ai-openvino
 Now, visit:  
 👉 **http://localhost:8000/docs**
 
+## **📥 Model Setup & Management**
+
+### **Automatic Model Download**
+The easiest way to get all required models:
+
+```sh
+cd tests
+python test_runner.py --download-models
+```
+
+### **Individual Model Downloads**
+Download specific models as needed:
+
+```sh
+# YOLOv8 Object Detection Models
+python test_runner.py --model yolov8n --download
+python test_runner.py --model yolov8s --download  
+python test_runner.py --model yolov8m --download
+
+# Other Models
+python test_runner.py --model lprnet --download
+python test_runner.py --model vehicle_tracking --download
+```
+
+### **Manual Model Conversion**
+If you have PyTorch models and need to convert them to OpenVINO:
+
+```sh
+# Convert YOLOv8 models
+python scripts/convert_to_openvino.py --size n  # nano
+python scripts/convert_to_openvino.py --size s  # small
+python scripts/convert_to_openvino.py --size m  # medium
+
+# Download and convert from scratch
+python scripts/download_and_convert.py
+```
+
+### **Verify Model Installation**
+Check if models are properly downloaded:
+
+```sh
+# Check YOLOv8 models
+ls models/yolov8n/*.xml models/yolov8n/*.bin
+ls models/yolov8s/*.xml models/yolov8s/*.bin
+ls models/yolov8m/*.xml models/yolov8m/*.bin
+
+# Check other models
+ls models/lprnet/*.xml models/lprnet/*.bin
+ls models/vehicle_tracking/*.xml models/vehicle_tracking/*.bin
+```
+
+### **Model File Structure**
+Each model directory contains:
+- `model.json` - Model configuration and metadata
+- `metadata.yaml` - Additional model information
+- `*.xml` - OpenVINO model structure (downloaded)
+- `*.bin` - OpenVINO model weights (downloaded)
+- `*.pt` - PyTorch model weights (optional, for conversion)
+
+**Note**: Binary files (.pt, .bin, .xml) are not stored in Git due to size constraints. They are downloaded automatically when needed.
+
 ## **🛠 API Endpoints**
 | Method | Endpoint         | Description          |
 |--------|-----------------|----------------------|
@@ -85,13 +160,16 @@ Now, visit:
 | `POST` | `/predict`      | Run AI inference    |
 
 ## **🧪 Running Tests**
+
+**⚠️ Prerequisites**: Make sure you have downloaded the required models first (see [Model Setup](#-model-setup--management) section above).
+
 ```sh
 # Setup test environment
 cd tests
 ./setup.sh
 source venv/bin/activate
 
-# Download models
+# Download models (if not already done)
 python test_runner.py --download-models
 
 # Run all tests
@@ -99,6 +177,11 @@ python test_runner.py --model all --input test_images/sample.jpg
 
 # Test specific model
 python test_yolov8n.py --input test_images/sample_cars.jpg
+
+# Test with different model sizes
+python test_yolov8_openvino.py --input test_images/sample_cars.jpg --size n  # nano
+python test_yolov8_openvino.py --input test_images/sample_cars.jpg --size s  # small
+python test_yolov8_openvino.py --input test_images/sample_cars.jpg --size m  # medium
 ```
 
 ## **🤖 Available Models**
