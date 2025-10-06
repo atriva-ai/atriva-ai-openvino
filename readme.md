@@ -92,55 +92,209 @@ docker run -d -p 8000:8000 --name ai-openvino-container atriva-ai-openvino
 Now, visit:  
 👉 **http://localhost:8000/docs**
 
-## **📥 Model Setup & Management**
+## **📥 Model Build Flow & Management**
 
-### **Automatic Model Download**
-The easiest way to get all required models:
+### **🏗️ Model Build Architecture**
+
+The AI service uses a **pre-built model approach** for optimal performance:
+
+```
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   Development   │    │   Docker Build   │    │   Production    │
+│   (Host)        │    │   (Container)    │    │   (Runtime)     │
+├─────────────────┤    ├──────────────────┤    ├─────────────────┤
+│ • Scripts       │    │ • Copy models    │    │ • Load models   │
+│ • Model conv.   │───▶│ • Install deps   │───▶│ • Run inference │
+│ • Testing       │    │ • Fast build     │    │ • API endpoints │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
+```
+
+### **📋 Requirements Structure**
+
+| File | Purpose | Python Version | Dependencies |
+|------|---------|----------------|-------------|
+| `requirements.txt` | **Docker AI Service** | 3.12 | FastAPI, OpenVINO, NumPy, OpenCV |
+| `tests/requirements.txt` | **Testing Environment** | **3.11** | Testing framework, utilities |
+| `scripts/requirements.txt` | **Model Conversion** | **3.11** | PyTorch, Ultralytics, OpenVINO |
+
+### **🚀 Quick Start (Recommended)**
+
+**Models are pre-built and ready to use:**
 
 ```sh
+# 1. Build Docker image (models already included)
+docker build -t atriva-ai-openvino .
+
+# 2. Run AI service
+docker run -d -p 8001:8001 --name ai-inference atriva-ai-openvino
+
+# 3. Test API
+curl http://localhost:8001/models
+```
+
+### **🔧 Development Workflow**
+
+#### **⚠️ Python Version Requirements**
+- **Docker AI Service**: Python 3.12 (handled by Dockerfile)
+- **Testing Environment**: **Python 3.11 required** (PyTorch compatibility)
+- **Scripts Environment**: **Python 3.11 required** (PyTorch compatibility)
+
+#### **For Testing & Development:**
+```sh
+# Setup test environment with Python 3.11
 cd tests
-python test_runner.py --download-models
+pyenv local 3.11.13  # or use python3.11
+python3.11 -m venv test-venv-py311
+source test-venv-py311/bin/activate
+pip install -r requirements.txt
+
+# Run tests
+python test_runner.py --model yolov8n --input test_images/sample.jpg
 ```
 
-### **Individual Model Downloads**
-Download specific models as needed:
-
+#### **For Model Conversion:**
 ```sh
-# YOLOv8 Object Detection Models
-python test_runner.py --model yolov8n --download
-python test_runner.py --model yolov8s --download  
-python test_runner.py --model yolov8m --download
+# Setup scripts environment with Python 3.11
+cd scripts
+pyenv local 3.11.13  # or use python3.11
+python3.11 -m venv scripts-venv-py311
+source scripts-venv-py311/bin/activate
+pip install -r requirements.txt
 
-# Other Models
-python test_runner.py --model lprnet --download
-python test_runner.py --model vehicle_tracking --download
+# Convert PyTorch to OpenVINO
+python convert_to_openvino.py --size n
 ```
 
-### **Manual Model Conversion**
-If you have PyTorch models and need to convert them to OpenVINO:
+#### **Why Python 3.11?**
+- **PyTorch compatibility**: PyTorch doesn't have pre-built wheels for Python 3.13
+- **NumPy compatibility**: Avoids NumPy 2.x compatibility issues
+- **Stable ML ecosystem**: Most ML libraries are tested with Python 3.11
 
-```sh
-# Convert YOLOv8 models
-python scripts/convert_to_openvino.py --size n  # nano
-python scripts/convert_to_openvino.py --size s  # small
-python scripts/convert_to_openvino.py --size m  # medium
+### **📦 Model Management**
 
-# Download and convert from scratch
-python scripts/download_and_convert.py
+#### **Available Models:**
+- ✅ **YOLOv8n** - Object detection (pre-built)
+- ✅ **YOLOv8s** - Object detection (pre-built)  
+- ✅ **YOLOv8m** - Object detection (pre-built)
+- ✅ **LPRNet** - License plate recognition (pre-built)
+- ✅ **Vehicle Tracking** - Vehicle detection (pre-built)
+
+#### **Model Files Structure:**
+```
+models/
+├── yolov8n/
+│   ├── yolov8n.xml          # OpenVINO model structure
+│   ├── yolov8n.bin          # OpenVINO model weights
+│   └── model.json           # Model configuration
+├── lprnet/
+│   ├── lprnet.xml
+│   ├── lprnet.bin
+│   └── model.json
+└── vehicle_tracking/
+    ├── vehicle_tracking.xml
+    ├── vehicle_tracking.bin
+    └── model.json
 ```
 
-### **Verify Model Installation**
-Check if models are properly downloaded:
-
+#### **Verify Model Installation:**
 ```sh
-# Check YOLOv8 models
-ls models/yolov8n/*.xml models/yolov8n/*.bin
-ls models/yolov8s/*.xml models/yolov8s/*.bin
-ls models/yolov8m/*.xml models/yolov8m/*.bin
+# Check all models are present
+ls models/*/model.json
+ls models/*/*.xml
+ls models/*/*.bin
 
-# Check other models
-ls models/lprnet/*.xml models/lprnet/*.bin
-ls models/vehicle_tracking/*.xml models/vehicle_tracking/*.bin
+# Expected output:
+# models/lprnet/model.json models/vehicle_tracking/model.json models/yolov8n/model.json
+# models/lprnet/lprnet.xml models/vehicle_tracking/vehicle_tracking.xml models/yolov8n/yolov8n.xml
+# models/lprnet/lprnet.bin models/vehicle_tracking/vehicle_tracking.bin models/yolov8n/yolov8n.bin
+```
+
+### **🔄 Adding New Models**
+
+1. **Create model directory:**
+   ```sh
+   mkdir models/new_model
+   ```
+
+2. **Add model files:**
+   - `new_model.xml` - OpenVINO structure
+   - `new_model.bin` - OpenVINO weights  
+   - `model.json` - Configuration
+
+3. **Update model capabilities:**
+   ```python
+   # Add to app/model_capabilities.py
+   ```
+
+4. **Test the model:**
+   ```sh
+   python test_runner.py --model new_model --input test_images/sample.jpg
+   ```
+
+## **🚨 Troubleshooting**
+
+### **Python Version Issues**
+
+#### **Error: "No matching distribution found for torch"**
+```bash
+# Problem: Using Python 3.13
+# Solution: Use Python 3.11
+pyenv local 3.11.13
+python3.11 -m venv venv-py311
+source venv-py311/bin/activate
+pip install -r requirements.txt
+```
+
+#### **Error: "NumPy compatibility issues"**
+```bash
+# Problem: NumPy 2.x with PyTorch
+# Solution: Downgrade NumPy
+pip install "numpy<2"
+```
+
+#### **Error: "ModuleNotFoundError: No module named 'ultralytics'"**
+```bash
+# Problem: Missing PyTorch dependencies
+# Solution: Use Python 3.11 environment
+cd scripts
+pyenv local 3.11.13
+python3.11 -m venv scripts-venv-py311
+source scripts-venv-py311/bin/activate
+pip install -r requirements.txt
+```
+
+### **Model Issues**
+
+#### **Error: "Unable to read the model: model.xml"**
+```bash
+# Problem: Corrupted model files (HTML instead of XML)
+# Solution: Regenerate models using scripts
+cd scripts
+source scripts-venv-py311/bin/activate
+python convert_to_openvino.py --size n
+```
+
+#### **Error: "Model file not found: yolov8n.pt"**
+```bash
+# Problem: Missing PyTorch model
+# Solution: Download model first
+python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
+```
+
+#### **Error: "404 Not Found" when downloading models**
+```bash
+# Problem: Outdated model URLs
+# Solution: Use working URLs
+# Working PyTorch model URL:
+# https://github.com/ultralytics/assets/releases/download/v8.1.0/yolov8n.pt
+
+# Note: ONNX models are not pre-built, convert from PyTorch:
+python -c "
+from ultralytics import YOLO
+model = YOLO('yolov8n.pt')
+model.export(format='onnx')
+print('ONNX model exported')
+"
 ```
 
 ### **Model File Structure**

@@ -1,0 +1,14 @@
+# Scripts Requirements
+# For model conversion and setup scripts
+
+# Core ML dependencies
+torch
+ultralytics
+
+# Utilities
+tqdm
+rich
+requests
+
+# OpenVINO for conversion
+openvino
