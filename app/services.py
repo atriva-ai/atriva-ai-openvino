@@ -78,10 +78,10 @@ def run_inference(input_data, compiled_model):
     return output
 
 def postprocess_detections(outputs, original_shape, ratio, pad, classes, confidence_threshold=0.25):
-    """Postprocess YOLOv8 detections with proper coordinate transformation"""
+    """Postprocess YOLOv8 detections with proper coordinate transformation - matching test implementation"""
     detections = []
     
-    # Get the output tensor - YOLOv8 format: (1, 84, 8400)
+    # Get the output tensor
     if isinstance(outputs, dict):
         output_tensor = list(outputs.values())[0]
     else:
@@ -89,66 +89,90 @@ def postprocess_detections(outputs, original_shape, ratio, pad, classes, confide
     
     print(f"Processing output shape: {output_tensor.shape}")
     
-    # YOLOv8 output format: (1, 84, 8400) where 84 = 4 (bbox) + 80 (classes)
-    # But our fine-tuned model has 8 classes, so it should be (1, 12, 8400)
-    # Let's check the actual shape and adjust
-    if output_tensor.shape[1] == 84:  # Standard YOLOv8 with 80 classes
-        num_classes = 80
-        bbox_start = 0
-        class_start = 4
-    else:  # Fine-tuned model with fewer classes
-        num_classes = len(classes)
-        bbox_start = 0
-        class_start = 4
+    # Check if this is the NMS output format (like in the test) or raw YOLOv8 format
+    if len(output_tensor.shape) == 3 and output_tensor.shape[1] == 6:
+        # NMS output format: (1, 6, N) where each detection has [x1, y1, x2, y2, score, class_id]
+        print("Processing NMS output format")
+        for i in range(output_tensor.shape[2]):
+            x1, y1, x2, y2, score, class_id = output_tensor[0, :, i]
+            
+            if score > confidence_threshold:
+                # Undo letterbox transformation
+                x1 = (x1 - pad[0]) / ratio
+                y1 = (y1 - pad[1]) / ratio
+                x2 = (x2 - pad[0]) / ratio
+                y2 = (y2 - pad[1]) / ratio
+                
+                # Clip to image boundaries
+                orig_h, orig_w = original_shape[:2]
+                x1 = max(0, min(int(x1), orig_w - 1))
+                y1 = max(0, min(int(y1), orig_h - 1))
+                x2 = max(0, min(int(x2), orig_w - 1))
+                y2 = max(0, min(int(y2), orig_h - 1))
+                
+                # Get class name
+                if int(class_id) < len(classes):
+                    class_name = classes[int(class_id)]
+                else:
+                    class_name = f"class_{int(class_id)}"
+                
+                detections.append({
+                    "class_id": int(class_id),
+                    "class_name": class_name,
+                    "confidence": float(score),
+                    "bbox_xyxy": [x1, y1, x2, y2]
+                })
     
-    # Process each detection
-    for i in range(output_tensor.shape[2]):  # 8400 detections
-        # Extract bbox coordinates (x_center, y_center, width, height)
-        x_center = output_tensor[0, bbox_start, i]
-        y_center = output_tensor[0, bbox_start + 1, i]
-        width = output_tensor[0, bbox_start + 2, i]
-        height = output_tensor[0, bbox_start + 3, i]
-        
-        # Extract class scores
-        class_scores = output_tensor[0, class_start:class_start + num_classes, i]
-        
-        # Get the best class
-        class_id = np.argmax(class_scores)
-        confidence = class_scores[class_id]
-        
-        if confidence > confidence_threshold:
-            # Convert from center format to corner format
-            x1 = x_center - width / 2
-            y1 = y_center - height / 2
-            x2 = x_center + width / 2
-            y2 = y_center + height / 2
+    else:
+        # Raw YOLOv8 format: (1, 84, 8400) or similar
+        print("Processing raw YOLOv8 output format")
+        # Process each detection
+        for i in range(output_tensor.shape[2]):  # 8400 detections
+            # Extract bbox coordinates (x_center, y_center, width, height)
+            x_center = output_tensor[0, 0, i]
+            y_center = output_tensor[0, 1, i]
+            width = output_tensor[0, 2, i]
+            height = output_tensor[0, 3, i]
             
-            # Undo letterbox transformation
-            # Remove padding, then rescale by ratio
-            x1 = (x1 - pad[0]) / ratio
-            y1 = (y1 - pad[1]) / ratio
-            x2 = (x2 - pad[0]) / ratio
-            y2 = (y2 - pad[1]) / ratio
+            # Extract class scores
+            class_scores = output_tensor[0, 4:, i]
             
-            # Clip to image boundaries
-            orig_h, orig_w = original_shape[:2]
-            x1 = max(0, min(int(x1), orig_w - 1))
-            y1 = max(0, min(int(y1), orig_h - 1))
-            x2 = max(0, min(int(x2), orig_w - 1))
-            y2 = max(0, min(int(y2), orig_h - 1))
+            # Get the best class
+            class_id = np.argmax(class_scores)
+            confidence = class_scores[class_id]
             
-            # Get class name
-            if class_id < len(classes):
-                class_name = classes[class_id]
-            else:
-                class_name = f"class_{class_id}"
-            
-            detections.append({
-                "class_id": int(class_id),
-                "class_name": class_name,
-                "confidence": float(confidence),
-                "bbox_xyxy": [x1, y1, x2, y2]
-            })
+            if confidence > confidence_threshold:
+                # Convert from center format to corner format
+                x1 = x_center - width / 2
+                y1 = y_center - height / 2
+                x2 = x_center + width / 2
+                y2 = y_center + height / 2
+                
+                # Undo letterbox transformation
+                x1 = (x1 - pad[0]) / ratio
+                y1 = (y1 - pad[1]) / ratio
+                x2 = (x2 - pad[0]) / ratio
+                y2 = (y2 - pad[1]) / ratio
+                
+                # Clip to image boundaries
+                orig_h, orig_w = original_shape[:2]
+                x1 = max(0, min(int(x1), orig_w - 1))
+                y1 = max(0, min(int(y1), orig_h - 1))
+                x2 = max(0, min(int(x2), orig_w - 1))
+                y2 = max(0, min(int(y2), orig_h - 1))
+                
+                # Get class name
+                if class_id < len(classes):
+                    class_name = classes[class_id]
+                else:
+                    class_name = f"class_{class_id}"
+                
+                detections.append({
+                    "class_id": int(class_id),
+                    "class_name": class_name,
+                    "confidence": float(confidence),
+                    "bbox_xyxy": [x1, y1, x2, y2]
+                })
     
     print(f"Found {len(detections)} detections")
     return detections

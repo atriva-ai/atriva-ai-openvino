@@ -13,7 +13,10 @@ ACCELERATORS = ["cpui8", "cpu16", "cpu32"]
 MODEL_NAME_MAPPING = {
     "person": "person-detection-retail-0013",
     "face": "face-detection-retail-0005",
-    "yolov8n": "yolov8n"
+    "yolov8n": "yolov8n",
+    "license_plate": "yolov8n",  # Map license_plate to yolov8n model
+    "vehicle": "yolov8n",        # Map vehicle to yolov8n model
+    "car": "yolov8n"             # Map car to yolov8n model
 }
 
 # OpenVINO Inference Engine Initialization
@@ -33,35 +36,10 @@ class ModelManager:
         self.MODEL_DIR = os.path.join(self.BASE_DIR, acceleration)
         os.makedirs(self.MODEL_DIR, exist_ok=True)
 
-    def download_model(self, model_name):
-        """Download model files (XML & BIN) and save them properly."""
-        model_url = MODEL_URLS.get(model_name, {}).get(self.acceleration)
-        if not model_url:
-            raise ValueError(f"❌ Model {model_name} not found for {self.acceleration}")
-
-        model_folder = os.path.join(self.MODEL_DIR, model_name)
-        os.makedirs(model_folder, exist_ok=True)
-
-        xml_url = f"{model_url}{model_name}.xml"
-        bin_url = f"{model_url}{model_name}.bin"
-
-        for file_url in [xml_url, bin_url]:
-            file_name = os.path.basename(file_url)
-            file_path = os.path.join(model_folder, file_name)
-
-            # ✅ Download the model safely
-            response = requests.get(file_url, stream=True)
-            content_type = response.headers.get("Content-Type", "")
-
-            if response.status_code == 200 and "text/html" not in content_type:
-                with open(file_path, "wb") as f:
-                    for chunk in response.iter_content(1024):
-                        f.write(chunk)
-                print(f"✅ Downloaded {file_name} to {file_path}")
-            else:
-                raise Exception(f"❌ Failed to download {file_name}. Server returned {response.status_code} ({content_type})")
-
-        print(f"✅ Model {model_name} is ready for {self.acceleration} in {model_folder}")
+    # def download_model(self, model_name):
+    #     """Download model files (XML & BIN) and save them properly."""
+    #     # DISABLED: Automatic download is disabled. Model files must be committed to repository.
+    #     raise Exception(f"❌ Automatic download is disabled. Please ensure model files are committed to the repository.")
 
     def load_model(self, requested_model):
         """Load a model using its friendly name or actual name."""
@@ -89,24 +67,9 @@ class ModelManager:
             input_shape = compiled_model.input(0).shape  # Expected shape (N, C, H, W)
             return compiled_model, input_shape
 
-        print(f"⚠️ Model {model_name} not found locally. Downloading...")
-        self.download_model(model_name)
-
-        # ✅ Check again after downloading
-        if os.path.exists(xml_path) and os.path.exists(bin_path):
-            print(f"✅ Model {model_name} is now ready in {model_folder}")
-
-            # Load the network model (XML & BIN)
-            model = self.ie.read_model(model=xml_path)
-
-            # Compile the model for inference
-            compiled_model = self.ie.compile_model(model=model, device_name="CPU")  # Change to "GPU" or "MYRIAD" if needed
-            print(f"Model compiled successfully on device: CPU")
-
-            input_shape = compiled_model.input(0).shape  # Expected shape (N, C, H, W)
-            return compiled_model, input_shape
-        else:
-            raise Exception(f"❌ Failed to download {model_name}.")
+        print(f"❌ Model {model_name} not found locally in {model_folder}")
+        print(f"❌ Expected files: {xml_path}, {bin_path}")
+        raise Exception(f"❌ Model {model_name} files not found. Please ensure model files are committed to the repository.")
 
     def _load_yolov8_model(self, model_name):
         """Load YOLOv8 model from local files."""
