@@ -21,11 +21,13 @@ atriva-ai-openvino/
 │   ├── lprnet/           # LPRNet license plate recognition model
 │   └── vehicle_tracking/ # Vehicle detection and tracking model
 │── tests/                # Comprehensive testing suite
-│   ├── test_runner.py    # Main test runner
-│   ├── test_yolov8n.py   # YOLOv8n specific tests
-│   ├── test_lprnet.py    # LPRNet specific tests
-│   ├── test_vehicle_tracking.py  # Vehicle tracking tests
-│   └── setup.sh          # Test environment setup
+│   ├── test_runner.py    # Main test runner with model download/conversion
+│   ├── test_yolov8_openvino.py   # YOLOv8 detection (supports n/s/m sizes)
+│   ├── test_vehicle_tracking.py  # Vehicle tracking (IoU + ByteTrack)
+│   ├── test_images/      # Sample test images
+│   ├── test_videos/      # Sample test videos
+│   ├── output/           # Generated output files
+│   └── requirements.txt  # Test dependencies
 │── main.py               # Entry point for FastAPI
 │── config.py             # Configuration settings
 │── requirements.txt      # Python dependencies
@@ -267,34 +269,48 @@ pip install -r requirements.txt
 
 #### **Error: "Unable to read the model: model.xml"**
 ```bash
-# Problem: Corrupted model files (HTML instead of XML)
-# Solution: Regenerate models using scripts
-cd scripts
-source scripts-venv-py311/bin/activate
-python convert_to_openvino.py --size n
-```
-
-#### **Error: "Model file not found: yolov8n.pt"**
-```bash
-# Problem: Missing PyTorch model
-# Solution: Download model first
-python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
+# Problem: Corrupted model files (HTML error page instead of XML)
+# Solution: Re-download using test_runner.py which handles conversion properly
+cd tests
+python test_runner.py --download-models
 ```
 
 #### **Error: "404 Not Found" when downloading models**
 ```bash
-# Problem: Outdated model URLs
-# Solution: Use working URLs
-# Working PyTorch model URL:
-# https://github.com/ultralytics/assets/releases/download/v8.1.0/yolov8n.pt
+# Problem: Direct OpenVINO model URLs don't exist for YOLOv8
+# Solution: Use ultralytics to download PyTorch weights and convert to OpenVINO
+# test_runner.py handles this automatically:
+python test_runner.py --download-models
 
-# Note: ONNX models are not pre-built, convert from PyTorch:
+# Manual conversion:
 python -c "
 from ultralytics import YOLO
-model = YOLO('yolov8n.pt')
-model.export(format='onnx')
-print('ONNX model exported')
+model = YOLO('yolov8n.pt')  # Downloads automatically
+model.export(format='openvino')  # Converts to .xml/.bin
 "
+```
+
+#### **Error: "Wrong class labels (class_34 instead of car)"**
+```bash
+# Problem: Loading classes from wrong metadata.yaml file
+# Solution: Ensure ultralytics/metadata.yaml is present (has 80 COCO classes)
+# The test scripts prioritize loading from models/yolov8n/ultralytics/metadata.yaml
+```
+
+#### **Error: "Incompatible inputs of type: ConstOutput"**
+```bash
+# Problem: Incorrect OpenVINO inference API usage
+# Old incorrect code: result = model([input_tensor], {input_tensor: input_data})
+# Correct code: result = model(input_data)
+```
+
+#### **Error: "too many values to unpack (expected 6)"**
+```bash
+# Problem: YOLOv8 output format is (1, 84, 8400) not (1, N, 6)
+# Solution: Transpose output and parse correctly:
+# predictions = outputs[0].T  # Shape: (8400, 84)
+# First 4 values: cx, cy, w, h
+# Remaining 80 values: class scores
 ```
 
 ### **Model File Structure**
@@ -320,42 +336,81 @@ Each model directory contains:
 ```sh
 # Setup test environment
 cd tests
-./setup.sh
+python3 -m venv venv
 source venv/bin/activate
+pip install -r requirements.txt
 
-# Download models (if not already done)
+# Download/convert YOLOv8 models (auto-downloads from Ultralytics and converts to OpenVINO)
 python test_runner.py --download-models
+```
 
-# Run all tests
-python test_runner.py --model all --input test_images/sample.jpg
-
-# Test specific model
-python test_yolov8n.py --input test_images/sample_cars.jpg
+### **Image Detection**
+```sh
+# Test YOLOv8n on image
+python test_runner.py --model yolov8n --input test_images/dog_bike_car.jpg
 
 # Test with different model sizes
-python test_yolov8_openvino.py --input test_images/sample_cars.jpg --size n  # nano
-python test_yolov8_openvino.py --input test_images/sample_cars.jpg --size s  # small
-python test_yolov8_openvino.py --input test_images/sample_cars.jpg --size m  # medium
+python test_yolov8_openvino.py --input test_images/sample.jpg --size n  # nano
+python test_yolov8_openvino.py --input test_images/sample.jpg --size s  # small
+python test_yolov8_openvino.py --input test_images/sample.jpg --size m  # medium
+```
+
+### **Video Detection**
+```sh
+# Process video with YOLOv8
+python test_runner.py --model yolov8n --input test_videos/sample_traffic.mp4
+
+# Advanced video options
+python test_yolov8_openvino.py --input test_videos/sample_traffic.mp4 --video --inference-fps 1 --length 30
+```
+
+### **Vehicle Tracking**
+```sh
+# Simple IoU-based tracking (default)
+python test_vehicle_tracking.py --input test_videos/sample_traffic.mp4 --video --tracker iou
+
+# ByteTrack algorithm (better occlusion handling)
+python test_vehicle_tracking.py --input test_videos/sample_traffic.mp4 --video --tracker bytetrack
+```
+
+**Sample Output Report:**
+```
+═══ Summary Report ═══
+✅ Processed 300 frames
+✅ Total processing time: 45.23s
+✅ Overall FPS (including I/O): 6.63
+✅ Inference FPS (model only): 28.45
+✅ Avg inference time per frame: 35.15ms
+✅ Total detections: 1250
+✅ Average detections per frame: 4.17
+✅ Maximum active tracks: 12
+✅ Tracker: bytetrack
+✅ Saved annotated video: output/vehicle_tracking_video_output.mp4
 ```
 
 ## **🤖 Available Models**
 
 ### **YOLOv8n Object Detection**
-- **Purpose**: Detect 80 different object classes
+- **Purpose**: Detect 80 COCO object classes
 - **Input**: 640×640 RGB images
-- **Output**: Bounding boxes with class labels and confidence scores
+- **Output**: Bounding boxes with class labels and confidence scores (NMS applied)
+- **Model Source**: Auto-downloaded from Ultralytics and converted to OpenVINO IR format
 - **Use Cases**: General object detection, surveillance, autonomous vehicles
 
 ### **LPRNet License Plate Recognition**
 - **Purpose**: Recognize license plate text
-- **Input**: 24×94 RGB images (license plate regions)
+- **Input**: 24×94 RGB images (cropped license plate regions)
 - **Output**: Recognized text with character-level confidence
+- **Note**: Requires pre-cropped license plate images (use detection model first)
 - **Use Cases**: Parking management, traffic enforcement, access control
 
 ### **Vehicle Detection and Tracking**
-- **Purpose**: Detect and track vehicles across video frames
-- **Input**: 416×416 RGB images
-- **Output**: Vehicle bounding boxes with unique track IDs
+- **Purpose**: Detect and track vehicles/persons across video frames
+- **Input**: 640×640 RGB images (uses YOLOv8n for detection)
+- **Output**: Bounding boxes with unique persistent track IDs
+- **Tracking Algorithms**:
+  - **IoU Tracking**: Simple overlap-based matching
+  - **ByteTrack**: Advanced algorithm with low-confidence detection recovery
 - **Use Cases**: Traffic monitoring, parking analytics, fleet management
 
 ## **📜 License**

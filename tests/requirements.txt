@@ -13,3 +13,7 @@ pytest-mock>=3.11.0
 # Utilities
 tqdm>=4.65.0
 rich>=13.4.0
+pyyaml>=6.0.0
+
+# YOLOv8 model download and conversion
+ultralytics>=8.0.0

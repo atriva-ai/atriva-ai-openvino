@@ -77,7 +77,7 @@ python test_runner.py --model all --input test_videos/sample_traffic.mp4
 python test_yolov8n.py --input test_images/sample_cars.jpg
 
 # Test on video
-python test_yolov8n.py --input test_videos/sample_traffic.mp4 --video
+python test_yolov8n.py --input test_videos/sample_traffic.mp4
 
 # Custom output path
 python test_yolov8n.py --input test_images/sample_cars.jpg --output my_output.jpg

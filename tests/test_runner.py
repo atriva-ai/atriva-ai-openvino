@@ -25,6 +25,7 @@ import cv2
 import numpy as np
 from openvino.runtime import Core
 import requests
+import yaml
 from tqdm import tqdm
 from rich.console import Console
 from rich.table import Table
@@ -73,15 +74,24 @@ class OpenVINOModelTester:
             return json.load(f)
     
     def download_model(self, model_name: str) -> bool:
-        """Download OpenVINO model files"""
+        """Download and convert model to OpenVINO format"""
         config = self.load_model_config(model_name)
         model_dir = self.models_dir / model_name
         
         console.print(f"[yellow]Downloading {model_name} model...[/yellow]")
         
         try:
-            # Download XML file
-            xml_url = config["openvino_model_url"] + f"{model_name}.xml"
+            # For YOLOv8 models, use ultralytics to download and convert
+            if model_name.startswith("yolov8"):
+                return self._download_and_convert_yolov8(model_name, model_dir)
+            
+            # For other models, try direct download from OpenVINO model zoo
+            base_url = config.get("openvino_model_url", "").rstrip("/")
+            if not base_url:
+                console.print(f"[red]❌ No download URL configured for {model_name}[/red]")
+                return False
+                
+            xml_url = f"{base_url}/{model_name}.xml"
             xml_path = model_dir / f"{model_name}.xml"
             
             response = requests.get(xml_url, stream=True)
@@ -92,7 +102,7 @@ class OpenVINOModelTester:
                     f.write(chunk)
             
             # Download BIN file
-            bin_url = config["openvino_model_url"] + f"{model_name}.bin"
+            bin_url = f"{base_url}/{model_name}.bin"
             bin_path = model_dir / f"{model_name}.bin"
             
             response = requests.get(bin_url, stream=True)
@@ -108,6 +118,78 @@ class OpenVINOModelTester:
         except Exception as e:
             console.print(f"[red]❌ Failed to download {model_name}: {str(e)}[/red]")
             return False
+    
+    def _download_and_convert_yolov8(self, model_name: str, model_dir: Path) -> bool:
+        """Download YOLOv8 model and convert to OpenVINO format using ultralytics"""
+        try:
+            from ultralytics import YOLO
+        except ImportError:
+            console.print("[red]❌ ultralytics package not installed. Run: pip install ultralytics[/red]")
+            return False
+        
+        try:
+            console.print(f"[yellow]Downloading {model_name} from Ultralytics...[/yellow]")
+            
+            # Load the model (this downloads the .pt file automatically)
+            model = YOLO(f"{model_name}.pt")
+            
+            # Export to OpenVINO format
+            console.print(f"[yellow]Converting {model_name} to OpenVINO format...[/yellow]")
+            export_path = model.export(format="openvino")
+            
+            # Move the exported files to our model directory
+            export_dir = Path(export_path)
+            xml_src = export_dir / f"{model_name}.xml"
+            bin_src = export_dir / f"{model_name}.bin"
+            
+            xml_dst = model_dir / f"{model_name}.xml"
+            bin_dst = model_dir / f"{model_name}.bin"
+            
+            # Copy files to model directory
+            import shutil
+            if xml_src.exists():
+                shutil.copy2(xml_src, xml_dst)
+            if bin_src.exists():
+                shutil.copy2(bin_src, bin_dst)
+            
+            console.print(f"[green]✅ Successfully downloaded and converted {model_name} to OpenVINO format[/green]")
+            return True
+            
+        except Exception as e:
+            console.print(f"[red]❌ Failed to download/convert {model_name}: {str(e)}[/red]")
+            return False
+    
+    def _load_yolov8_classes(self, model_name: str) -> List[str]:
+        """Load class names from ultralytics metadata.yaml file"""
+        model_dir = self.models_dir / model_name
+        
+        # Search for metadata.yaml - prioritize ultralytics subdirectory (COCO model)
+        search_paths = [
+            model_dir / "ultralytics" / "metadata.yaml",
+            model_dir / f"{model_name}_openvino_model" / "metadata.yaml",
+            model_dir / "metadata.yaml",  # Fallback to root (may be custom-trained)
+        ]
+        
+        for metadata_path in search_paths:
+            if metadata_path.exists():
+                try:
+                    with open(metadata_path, 'r') as f:
+                        metadata = yaml.safe_load(f)
+                    
+                    # Extract class names from 'names' dict
+                    names_dict = metadata.get('names', {})
+                    if names_dict:
+                        # Convert dict {0: 'person', 1: 'bicycle', ...} to list
+                        max_idx = max(names_dict.keys())
+                        classes = [''] * (max_idx + 1)
+                        for idx, name in names_dict.items():
+                            classes[idx] = name
+                        console.print(f"[blue]Loaded {len(classes)} class names from {metadata_path}[/blue]")
+                        return classes
+                except Exception as e:
+                    console.print(f"[yellow]Warning: Could not load metadata from {metadata_path}: {e}[/yellow]")
+        
+        return []
     
     def load_openvino_model(self, model_name: str):
         """Load OpenVINO model for inference"""
@@ -141,9 +223,12 @@ class OpenVINOModelTester:
             if image is None:
                 raise ValueError(f"Could not load image: {input_path}")
             
+            orig_h, orig_w = image.shape[:2]
+            
             # Resize image to model input size
             input_shape = config["input_shape"][2:]  # [640, 640]
-            resized_image = cv2.resize(image, input_shape)
+            input_h, input_w = input_shape
+            resized_image = cv2.resize(image, (input_w, input_h))
             
             # Convert BGR to RGB and normalize
             rgb_image = cv2.cvtColor(resized_image, cv2.COLOR_BGR2RGB)
@@ -154,19 +239,90 @@ class OpenVINOModelTester:
             input_data = np.expand_dims(input_data, axis=0)
             
             # Run inference
-            input_tensor = model.input(0)
             output_tensor = model.output(0)
             
-            result = model([input_tensor], {input_tensor: input_data})
+            result = model(input_data)
             outputs = result[output_tensor]
             
-            # Process outputs (simplified - would need proper post-processing)
             console.print(f"[green]✅ YOLOv8n inference completed. Output shape: {outputs.shape}[/green]")
             
-            # Save annotated image (simplified)
+            # Post-process YOLOv8 outputs
+            # Output shape is (1, 84, 8400) -> transpose to (8400, 84)
+            predictions = outputs[0].T  # Shape: (8400, 84)
+            
+            conf_threshold = config.get("confidence_threshold", 0.25)
+            nms_threshold = config.get("nms_threshold", 0.45)
+            
+            # Load class names from metadata.yaml (ultralytics export) if available
+            classes = self._load_yolov8_classes("yolov8n")
+            if not classes:
+                classes = config.get("classes", [])
+            
+            boxes = []
+            confidences = []
+            class_ids = []
+            
+            # Scale factors
+            scale_x = orig_w / input_w
+            scale_y = orig_h / input_h
+            
+            for pred in predictions:
+                # First 4 values: cx, cy, w, h
+                cx, cy, w, h = pred[:4]
+                # Remaining 80 values: class scores
+                class_scores = pred[4:]
+                
+                # Get best class
+                class_id = np.argmax(class_scores)
+                confidence = class_scores[class_id]
+                
+                if confidence > conf_threshold:
+                    # Convert from center format to corner format and scale to original image
+                    x1 = int((cx - w / 2) * scale_x)
+                    y1 = int((cy - h / 2) * scale_y)
+                    box_w = int(w * scale_x)
+                    box_h = int(h * scale_y)
+                    
+                    boxes.append([x1, y1, box_w, box_h])
+                    confidences.append(float(confidence))
+                    class_ids.append(class_id)
+            
+            # Apply Non-Maximum Suppression
+            indices = cv2.dnn.NMSBoxes(boxes, confidences, conf_threshold, nms_threshold)
+            
+            # Draw bounding boxes
             annotated_image = image.copy()
-            cv2.putText(annotated_image, "YOLOv8n Detection", (10, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            
+            # Generate colors for each class
+            np.random.seed(42)
+            colors = np.random.randint(0, 255, size=(len(classes), 3), dtype=np.uint8)
+            
+            detection_count = 0
+            if len(indices) > 0:
+                for i in indices.flatten():
+                    x, y, w, h = boxes[i]
+                    class_id = class_ids[i]
+                    confidence = confidences[i]
+                    
+                    # Get class name and color
+                    class_name = classes[class_id] if class_id < len(classes) else f"class_{class_id}"
+                    color = tuple(map(int, colors[class_id % len(colors)]))
+                    
+                    # Draw bounding box
+                    cv2.rectangle(annotated_image, (x, y), (x + w, y + h), color, 2)
+                    
+                    # Draw label background
+                    label = f"{class_name}: {confidence:.2f}"
+                    (label_w, label_h), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                    cv2.rectangle(annotated_image, (x, y - label_h - 10), (x + label_w, y), color, -1)
+                    
+                    # Draw label text
+                    cv2.putText(annotated_image, label, (x, y - 5), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                    
+                    detection_count += 1
+            
+            console.print(f"[green]✅ Detected {detection_count} objects[/green]")
             
             cv2.imwrite(output_path, annotated_image)
             console.print(f"[green]✅ Saved annotated image: {output_path}[/green]")
@@ -202,10 +358,9 @@ class OpenVINOModelTester:
             input_data = np.expand_dims(input_data, axis=0)
             
             # Run inference
-            input_tensor = model.input(0)
             output_tensor = model.output(0)
             
-            result = model([input_tensor], {input_tensor: input_data})
+            result = model(input_data)
             outputs = result[output_tensor]
             
             # Process outputs (simplified - would need proper post-processing)
@@ -250,10 +405,9 @@ class OpenVINOModelTester:
             input_data = np.expand_dims(input_data, axis=0)
             
             # Run inference
-            input_tensor = model.input(0)
             output_tensor = model.output(0)
             
-            result = model([input_tensor], {input_tensor: input_data})
+            result = model(input_data)
             outputs = result[output_tensor]
             
             # Process outputs (simplified - would need proper post-processing)
@@ -278,6 +432,26 @@ class OpenVINOModelTester:
         console.print(f"[blue]Testing {model_name} on video: {input_path}[/blue]")
         
         try:
+            # Only YOLOv8n is fully implemented for video
+            if model_name != "yolov8n":
+                console.print(f"[yellow]⚠️ Video processing only implemented for yolov8n, skipping {model_name}[/yellow]")
+                return False
+            
+            # Load model and config
+            model, config = self.load_openvino_model(model_name)
+            classes = self._load_yolov8_classes(model_name)
+            if not classes:
+                classes = config.get("classes", [])
+            
+            conf_threshold = config.get("confidence_threshold", 0.25)
+            nms_threshold = config.get("nms_threshold", 0.45)
+            input_shape = config["input_shape"][2:]  # [640, 640]
+            input_h, input_w = input_shape
+            
+            # Generate colors for each class
+            np.random.seed(42)
+            colors = np.random.randint(0, 255, size=(len(classes), 3), dtype=np.uint8)
+            
             cap = cv2.VideoCapture(input_path)
             if not cap.isOpened():
                 raise ValueError(f"Could not open video: {input_path}")
@@ -286,35 +460,71 @@ class OpenVINOModelTester:
             fps = int(cap.get(cv2.CAP_PROP_FPS))
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            
+            console.print(f"[blue]Video: {width}x{height} @ {fps}fps, {total_frames} frames[/blue]")
             
             # Setup video writer
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
             out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
             
+            output_tensor = model.output(0)
+            scale_x = width / input_w
+            scale_y = height / input_h
+            
             frame_count = 0
-            while True:
+            for _ in tqdm(range(total_frames), desc="Processing frames"):
                 ret, frame = cap.read()
                 if not ret:
                     break
                 
-                # Process frame based on model type
-                if model_name == "yolov8n":
-                    # Simplified processing - would need proper implementation
-                    processed_frame = frame.copy()
-                    cv2.putText(processed_frame, f"YOLOv8n Frame {frame_count}", 
-                               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                elif model_name == "lprnet":
-                    processed_frame = frame.copy()
-                    cv2.putText(processed_frame, f"LPRNet Frame {frame_count}", 
-                               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                elif model_name == "vehicle_tracking":
-                    processed_frame = frame.copy()
-                    cv2.putText(processed_frame, f"Vehicle Tracking Frame {frame_count}", 
-                               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                else:
-                    processed_frame = frame
+                # Preprocess frame
+                resized = cv2.resize(frame, (input_w, input_h))
+                rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+                normalized = rgb.astype(np.float32) / 255.0
+                input_data = np.transpose(normalized, (2, 0, 1))
+                input_data = np.expand_dims(input_data, axis=0)
                 
-                out.write(processed_frame)
+                # Run inference
+                result = model(input_data)
+                outputs = result[output_tensor]
+                predictions = outputs[0].T
+                
+                # Post-process detections
+                boxes, confidences, class_ids = [], [], []
+                for pred in predictions:
+                    cx, cy, w, h = pred[:4]
+                    class_scores = pred[4:]
+                    class_id = np.argmax(class_scores)
+                    confidence = class_scores[class_id]
+                    
+                    if confidence > conf_threshold:
+                        x1 = int((cx - w / 2) * scale_x)
+                        y1 = int((cy - h / 2) * scale_y)
+                        box_w = int(w * scale_x)
+                        box_h = int(h * scale_y)
+                        boxes.append([x1, y1, box_w, box_h])
+                        confidences.append(float(confidence))
+                        class_ids.append(class_id)
+                
+                # Apply NMS and draw boxes
+                indices = cv2.dnn.NMSBoxes(boxes, confidences, conf_threshold, nms_threshold)
+                
+                if len(indices) > 0:
+                    for i in indices.flatten():
+                        x, y, w, h = boxes[i]
+                        class_id = class_ids[i]
+                        confidence = confidences[i]
+                        class_name = classes[class_id] if class_id < len(classes) else f"class_{class_id}"
+                        color = tuple(map(int, colors[class_id % len(colors)]))
+                        
+                        cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+                        label = f"{class_name}: {confidence:.2f}"
+                        (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                        cv2.rectangle(frame, (x, y - lh - 10), (x + lw, y), color, -1)
+                        cv2.putText(frame, label, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                
+                out.write(frame)
                 frame_count += 1
             
             cap.release()
@@ -421,12 +631,20 @@ def main():
         console.print(table)
     else:
         # Test specific model
-        if args.model == "yolov8n":
-            success = tester.test_yolov8n_detection(args.input, args.output or "output/yolov8n_output.jpg")
-        elif args.model == "lprnet":
-            success = tester.test_lprnet_recognition(args.input, args.output or "output/lprnet_output.jpg")
-        elif args.model == "vehicle_tracking":
-            success = tester.test_vehicle_tracking(args.input, args.output or "output/vehicle_tracking_output.jpg")
+        is_video = args.input.lower().endswith(('.mp4', '.avi', '.mov', '.mkv'))
+        
+        if is_video:
+            # Video processing
+            output_path = args.output or f"output/{args.model}_video_output.mp4"
+            success = tester.test_video_processing(args.model, args.input, output_path)
+        else:
+            # Image processing
+            if args.model == "yolov8n":
+                success = tester.test_yolov8n_detection(args.input, args.output or "output/yolov8n_output.jpg")
+            elif args.model == "lprnet":
+                success = tester.test_lprnet_recognition(args.input, args.output or "output/lprnet_output.jpg")
+            elif args.model == "vehicle_tracking":
+                success = tester.test_vehicle_tracking(args.input, args.output or "output/vehicle_tracking_output.jpg")
         
         if success:
             console.print(f"[green]✅ {args.model} test completed successfully[/green]")

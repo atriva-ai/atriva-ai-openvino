@@ -7,12 +7,12 @@ This script tests YOLOv8 object detection models (n/s/m) with OpenVINO.
 It can process both images and videos, detecting objects and creating annotated outputs.
 
 Usage:
-    python test_yolov8n.py --input test_images/sample.jpg
-    python test_yolov8n.py --input test_images/sample.jpg --size s
-    python test_yolov8n.py --input test_videos/sample.mp4 --video --size m
-    python test_yolov8n.py --input test_videos/sample.mp4 --video --fps 30
-    python test_yolov8n.py --input test_videos/sample.mp4 --video --length 10.5
-    python test_yolov8n.py --input test_videos/sample.mp4 --video --inference-fps 1 --length 30
+    python test_yolov8_openvino.py --input test_images/sample.jpg
+    python test_yolov8_openvino.py --input test_images/sample.jpg --size s
+    python test_yolov8_openvino.py --input test_videos/sample.mp4 --video --size m
+    python test_yolov8_openvino.py --input test_videos/sample.mp4 --video --fps 30
+    python test_yolov8_openvino.py --input test_videos/sample.mp4 --video --length 10.5
+    python test_yolov8_openvino.py --input test_videos/sample.mp4 --video --inference-fps 1 --length 30
 """
 
 import os
@@ -21,12 +21,12 @@ import json
 import argparse
 import cv2
 import numpy as np
+import yaml
 from pathlib import Path
 from openvino.runtime import Core
 from rich.console import Console
 from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn
 import time
-import numpy as np
 
 
 console = Console()
@@ -53,13 +53,51 @@ class YOLOv8Tester:
         self.ie = Core()
         self.model = None
         self.input_shape = self.config["input_shape"][2:]  # [640, 640]
-        self.classes = self.config["classes"]
-        self.confidence_threshold = 0.01  # Lower threshold to match model output
-        self.nms_threshold = self.config["nms_threshold"]
+        
+        # Load classes from ultralytics metadata.yaml (COCO 80 classes)
+        self.classes = self._load_classes_from_metadata()
+        if not self.classes:
+            self.classes = self.config.get("classes", [])
+        
+        self.confidence_threshold = self.config.get("confidence_threshold", 0.25)
+        self.nms_threshold = self.config.get("nms_threshold", 0.45)
+        
+        # Generate unique colors for each class
+        np.random.seed(42)
+        self.colors = np.random.randint(0, 255, size=(len(self.classes), 3), dtype=np.uint8)
         
         console.print(f"[green]YOLOv8{model_size.upper()} Tester initialized[/green]")
         console.print(f"[blue]Input shape: {self.input_shape}[/blue]")
         console.print(f"[blue]Classes: {len(self.classes)}[/blue]")
+        console.print(f"[blue]Confidence threshold: {self.confidence_threshold}[/blue]")
+    
+    def _load_classes_from_metadata(self):
+        """Load class names from ultralytics metadata.yaml (COCO classes)"""
+        # Prioritize ultralytics subdirectory (has correct COCO 80 classes)
+        search_paths = [
+            self.models_dir / "ultralytics" / "metadata.yaml",
+            self.models_dir / f"yolov8{self.model_size}_openvino_model" / "metadata.yaml",
+            self.models_dir / "metadata.yaml",
+        ]
+        
+        for metadata_path in search_paths:
+            if metadata_path.exists():
+                try:
+                    with open(metadata_path, 'r') as f:
+                        metadata = yaml.safe_load(f)
+                    
+                    names_dict = metadata.get('names', {})
+                    if names_dict and len(names_dict) >= 80:  # Ensure it's COCO (80 classes)
+                        max_idx = max(names_dict.keys())
+                        classes = [''] * (max_idx + 1)
+                        for idx, name in names_dict.items():
+                            classes[idx] = name
+                        console.print(f"[blue]Loaded {len(classes)} classes from {metadata_path}[/blue]")
+                        return classes
+                except Exception as e:
+                    console.print(f"[yellow]Warning: Could not load metadata: {e}[/yellow]")
+        
+        return []
     
     def load_model(self):
         """Load YOLOv8 OpenVINO model"""
@@ -115,7 +153,7 @@ class YOLOv8Tester:
         return padded, r, (left, top)
 
     def postprocess_detections(self, outputs, original_shape):
-        """Simple postprocessing for NMS output format"""
+        """Postprocess YOLOv8 raw output format (1, 84, 8400)"""
         detections = []
         
         # Get the output tensor
@@ -123,25 +161,42 @@ class YOLOv8Tester:
             output_tensor = list(outputs.values())[0]
         else:
             output_tensor = outputs
-            
-        # console.print(f"[yellow]Debug: Output shape: {output_tensor.shape}[/yellow]")
-        # console.print(f"[yellow]Debug: First 5 detections: {output_tensor[0, :5]}[/yellow]")
+        
+        # YOLOv8 output shape is (1, 84, 8400) -> transpose to (8400, 84)
+        # 84 = 4 (cx, cy, w, h) + 80 (class scores)
+        predictions = output_tensor[0].T  # Shape: (8400, 84)
         
         # Unpack letterbox params
         r = self.ratio
         dw, dh = self.pad
         orig_h, orig_w = original_shape[:2]
-
-        # Process each detection: [x1, y1, x2, y2, score, class_id]
-        for i in range(output_tensor.shape[1]):
-            x1, y1, x2, y2, score, class_id = output_tensor[0, i]
+        
+        boxes = []
+        confidences = []
+        class_ids = []
+        
+        for pred in predictions:
+            # First 4 values: cx, cy, w, h (in input image coordinates)
+            cx, cy, w, h = pred[:4]
+            # Remaining values: class scores
+            class_scores = pred[4:]
             
-            if score > self.confidence_threshold:
+            # Get best class
+            class_id = np.argmax(class_scores)
+            confidence = class_scores[class_id]
+            
+            if confidence > self.confidence_threshold:
+                # Convert from center format to corner format
+                x1 = cx - w / 2
+                y1 = cy - h / 2
+                x2 = cx + w / 2
+                y2 = cy + h / 2
+                
                 # Undo letterbox: remove padding, then rescale by ratio
                 x1 = (x1 - dw) / r
                 y1 = (y1 - dh) / r
                 x2 = (x2 - dw) / r
-                y2 = (y2 - dh) / r        
+                y2 = (y2 - dh) / r
                 
                 # Clip to image boundaries
                 x1 = max(0, min(int(x1), orig_w - 1))
@@ -149,23 +204,43 @@ class YOLOv8Tester:
                 x2 = max(0, min(int(x2), orig_w - 1))
                 y2 = max(0, min(int(y2), orig_h - 1))
                 
-                detections.append({
-                    "class_id": int(class_id),
-                    "class_name": self.classes[int(class_id)],
-                    "confidence": float(score),
-                    "bbox_xyxy": [x1, y1, x2, y2]
-                })
+                box_w = x2 - x1
+                box_h = y2 - y1
+                
+                boxes.append([x1, y1, box_w, box_h])
+                confidences.append(float(confidence))
+                class_ids.append(int(class_id))
         
-        console.print(f"[yellow]Debug: {len(detections)} detections found[/yellow]")
+        # Apply Non-Maximum Suppression
+        if len(boxes) > 0:
+            indices = cv2.dnn.NMSBoxes(boxes, confidences, self.confidence_threshold, self.nms_threshold)
+            
+            if len(indices) > 0:
+                for i in indices.flatten():
+                    x1, y1, w, h = boxes[i]
+                    class_id = class_ids[i]
+                    class_name = self.classes[class_id] if class_id < len(self.classes) else f"class_{class_id}"
+                    
+                    detections.append({
+                        "class_id": class_id,
+                        "class_name": class_name,
+                        "confidence": confidences[i],
+                        "bbox_xyxy": [x1, y1, x1 + w, y1 + h]
+                    })
+        
         return detections
     
     def draw_detections(self, image, detections):
-        """Draw bounding boxes and labels on image"""
+        """Draw bounding boxes and labels on image with unique colors per class"""
         annotated_image = image.copy()
         
         for detection in detections:
+            class_id = detection.get('class_id', 0)
             class_name = detection['class_name']
             confidence = detection['confidence']
+            
+            # Get unique color for this class
+            color = tuple(map(int, self.colors[class_id % len(self.colors)]))
             
             # Use the xyxy format from the new postprocessing
             if 'bbox_xyxy' in detection:
@@ -188,14 +263,14 @@ class YOLOv8Tester:
             x2 = max(0, min(x2, w-1))
             y2 = max(0, min(y2, h-1))
             
-            # Draw bounding box
-            cv2.rectangle(annotated_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            # Draw bounding box with class-specific color
+            cv2.rectangle(annotated_image, (x1, y1), (x2, y2), color, 2)
             
-            # Draw label
+            # Draw label background with class-specific color
             label = f"{class_name}: {confidence:.2f}"
-            label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
-            cv2.rectangle(annotated_image, (x1, y1 - label_size[1] - 10), 
-                         (x1 + label_size[0], y1), (0, 255, 0), -1)
+            (label_w, label_h), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            cv2.rectangle(annotated_image, (x1, y1 - label_h - 10), 
+                         (x1 + label_w, y1), color, -1)
             cv2.putText(annotated_image, label, (x1, y1 - 5), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
         
@@ -282,8 +357,16 @@ class YOLOv8Tester:
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         
-        # Use provided fps or original video fps
-        output_fps = fps if fps is not None else original_fps
+        # Determine output FPS:
+        # 1. Use explicit --fps if provided
+        # 2. Otherwise, use inference_fps to maintain correct playback speed
+        # 3. Fall back to original fps if neither is specified
+        if fps is not None:
+            output_fps = fps
+        elif inference_fps is not None:
+            output_fps = inference_fps  # Match output fps to inference fps for correct playback
+        else:
+            output_fps = original_fps
         
         # Calculate frames to process based on length and inference FPS
         if length is not None:
