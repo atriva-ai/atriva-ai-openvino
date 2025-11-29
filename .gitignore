@@ -3,9 +3,12 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Virtual environment
+# Virtual environments
 venv/
 env/
+.env/
+py311-venv/
+*-venv/
 
 # Distribution / packaging
 build/
@@ -19,7 +22,7 @@ dist/
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/
 
-# IDE settings (PyCharm, VS Code, etc.)
+# IDE settings
 .vscode/
 .idea/
 *.iml
@@ -27,56 +30,31 @@ dist/
 # Testing
 .coverage
 .tox/
+.pytest_cache/
 
-# Secrets (make sure to exclude sensitive data!)
+# Secrets
 .env
 
+# OS
 .DS_Store
-# Virtual environments
-py311-venv/
-venv/
-.env/
 
 # Test outputs
 output/
 runs/
+tests/output/
+tests/yolov8n_openvino_model/
 
 # Python version file
 .python-version
 
-# Large model files
+# PyTorch weights (large, can be downloaded)
 *.pt
-*.bin
-*.xml
 
-# Virtual environments
-py311-venv/
-venv/
-.env/
-
-# Test outputs
-output/
-runs/
-
-# Python version file
-.python-version
-
-# Large model files
-*.pt
-*.bin
-*.xml
+# Model files - ALLOW in models/ directory, exclude elsewhere
+# We commit OpenVINO models (*.xml, *.bin) for faster Docker builds
+tests/*.bin
+tests/*.xml
 
 # Sample/placeholder files
 tests/test_images/sample_*
-
-# Virtual environments
-py311-venv/
-venv/
-.env/
-
-# Test outputs
-output/
-runs/
-
-# Python version file
-.python-version
+tests/test_videos/

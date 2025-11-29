@@ -1,0 +1,47 @@
+# Virtual environments
+venv/
+env/
+.env/
+*-venv/
+py311-venv/
+test-venv*/
+
+# PyTorch weights (not needed in production)
+*.pt
+*.onnx
+
+# Exclude test model outputs but KEEP models/ directory
+tests/yolov8n_openvino_model/
+
+# Test outputs and videos
+tests/output/
+tests/test_videos/
+tests/yolov8n_openvino_model/
+output/
+runs/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Git
+.git/
+.gitignore
+
+# Misc
+.DS_Store
+*.log
+.coverage
+.python-version
+
+# Keep model configs (small JSON/YAML files)
+!models/**/model.json
+!models/**/metadata.yaml
+

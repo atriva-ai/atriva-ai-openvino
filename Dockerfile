@@ -33,16 +33,19 @@ COPY . /app
 # NOT monting model folder until we are ready to manage model from the applications
 # VOLUME ["/app/models"]
 
-# Create a virtual environment
+# Create a virtual environment and install dependencies
 RUN python3 -m venv /app/venv
 
-# Activate virtual environment
+# Set virtual environment path
 ENV PATH="/app/venv/bin:$PATH"
 
-# Copy requirements.txt and install dependencies
+# Install dependencies (use full path to ensure venv pip is used)
 COPY requirements.txt .
-RUN pip install --upgrade pip \
-    && pip install -r requirements.txt
+RUN /app/venv/bin/pip install --upgrade pip \
+    && /app/venv/bin/pip install -r requirements.txt
+
+# Model files (yolov8n.xml, yolov8n.bin) are committed to git and copied via COPY . /app
+# No need to install torch/ultralytics - saves ~2.5GB in container size
 
 # Expose FastAPI port
 EXPOSE 8001
