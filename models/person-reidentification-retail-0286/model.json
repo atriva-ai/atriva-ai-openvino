@@ -1,0 +1,14 @@
+{
+  "model_name": "person-reidentification-retail-0286",
+  "model_type": "person_reidentification",
+  "output_format": "embedding",
+  "architecture": "openvino",
+  "input_shape": [1, 3, 256, 128],
+  "output_shape": [1, 256],
+  "precision": "FP32",
+  "description": "Person re-identification model for tracking across camera views",
+  "source": "OpenVINO Model Zoo",
+  "license": "Apache-2.0",
+  "version": "2023.0"
+}
+

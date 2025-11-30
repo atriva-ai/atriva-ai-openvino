@@ -1,301 +1,229 @@
 # OpenVINO AI Testing Suite
 
-This directory contains a comprehensive testing suite for OpenVINO AI models including YOLOv8n object detection, LPRNet license plate recognition, and vehicle detection and tracking.
+Comprehensive testing suite for OpenVINO AI models including object detection, face detection, license plate detection & recognition, and person tracking.
 
 ## 📁 Directory Structure
 
 ```
 tests/
-├── ../models/                       # Model configurations and downloaded files (top-level)
-│   ├── yolov8n/
-│   │   ├── model.json              # YOLOv8n configuration
-│   │   ├── yolov8n.xml             # OpenVINO XML model file
-│   │   └── yolov8n.bin             # OpenVINO BIN model file
-│   ├── lprnet/
-│   │   ├── model.json              # LPRNet configuration
-│   │   ├── lprnet.xml              # OpenVINO XML model file
-│   │   └── lprnet.bin              # OpenVINO BIN model file
-│   └── vehicle_tracking/
-│       ├── model.json              # Vehicle tracking configuration
-│       ├── vehicle_tracking.xml    # OpenVINO XML model file
-│       └── vehicle_tracking.bin    # OpenVINO BIN model file
+├── ../models/                       # Model files (parent directory)
+│   ├── yolov8n/                     # YOLOv8 object detection (80 COCO classes)
+│   ├── face-detection-retail-0005/  # Face detection
+│   ├── vehicle-license-plate-detection-barrier-0106/  # Vehicle & LP detection
+│   ├── lprnet/                      # License plate text recognition
+│   └── person-reidentification-retail-0286/  # Person re-ID for tracking
 ├── test_images/                     # Sample test images
 ├── test_videos/                     # Sample test videos
-├── output/                          # Generated annotated outputs
-├── venv/                           # Python virtual environment
-├── requirements.txt                 # Python dependencies
-├── setup.sh                        # Environment setup script
-├── test_runner.py                  # Main test runner
-├── test_yolov8n.py                 # YOLOv8n specific tests
-├── test_lprnet.py                  # LPRNet specific tests
-├── test_vehicle_tracking.py        # Vehicle tracking specific tests
-└── README.md                       # This file
+├── output/                          # Generated outputs
+├── test_runner.py                   # Main test runner
+├── test_yolov8_openvino.py          # YOLOv8 specific tests
+├── test_vehicle_tracking.py         # Person/vehicle tracking
+├── test_api.py                      # Docker API test suite
+└── README.md                        # This file
 ```
 
 ## 🚀 Quick Start
 
-### 1. Setup Environment
-
 ```bash
-# Run the setup script
-chmod +x setup.sh
-./setup.sh
-
-# Activate virtual environment
+# Setup virtual environment
+cd services/ai-inference/tests
+python -m venv venv
 source venv/bin/activate
+pip install -r requirements.txt
+
+# List available models
+python test_runner.py --list-models
+
+# Run tests
+python test_runner.py --model yolov8n --input test_images/bus.jpg
 ```
 
-### 2. Download Models
+---
+
+## 📷 Image Detection Tests
+
+### General Object Detection (YOLOv8n)
+
+Detects 80 COCO object classes (person, car, dog, bicycle, etc.)
 
 ```bash
-# Download all models
-python test_runner.py --download-models
+python test_runner.py --model yolov8n --input test_images/dog_bike_car.jpg
 
-# Or download individual models
-python test_runner.py --model yolov8n --download
+# Or use the dedicated script with more options
+python test_yolov8_openvino.py --input test_images/dog_bike_car.jpg --output output/yolo_result.jpg
 ```
 
-### 3. Run Tests
+### Face Detection
+
+Detects faces in images, optimized for retail environments.
 
 ```bash
-# Test all models on an image
-python test_runner.py --model all --input test_images/sample_cars.jpg
+# Using alias
+python test_runner.py --model face --input test_images/bus.jpg
 
-# Test specific model
-python test_runner.py --model yolov8n --input test_images/sample_cars.jpg
-
-# Test on video
-python test_runner.py --model all --input test_videos/sample_traffic.mp4
+# Using full model name
+python test_runner.py --model face-detection-retail-0005 --input test_images/bus.jpg
 ```
 
-## 🧪 Individual Model Tests
+### Vehicle & License Plate Detection
 
-### YOLOv8n Object Detection
+Detects vehicles and license plates in barrier/gate scenarios.
 
 ```bash
-# Test on image
-python test_yolov8n.py --input test_images/sample_cars.jpg
+# Using alias
+python test_runner.py --model license_plate_detection --input test_images/licenseplate1.jpg
+python test_runner.py --model lp_detection --input test_images/licenseplate1.jpg
 
-# Test on video
-python test_yolov8n.py --input test_videos/sample_traffic.mp4
+# Using full model name
+python test_runner.py --model vehicle-license-plate-detection-barrier-0106 --input test_images/licenseplate1.jpg
+```
+
+### License Plate Recognition (LPRNet)
+
+Recognizes text from cropped license plate images.
+
+```bash
+python test_runner.py --model lprnet --input test_images/plate_crop.jpg
+```
+
+### Run All Image Tests
+
+```bash
+python test_runner.py --model all --input test_images/sample.jpg
+```
+
+---
+
+## 🎬 Video Detection & Tracking Tests
+
+### Object Detection on Video
+
+```bash
+python test_yolov8_openvino.py --input test_videos/traffic.mp4 --output output/traffic_detected.mp4
+
+# With custom FPS
+python test_yolov8_openvino.py --input test_videos/traffic.mp4 --inference-fps 5
+```
+
+### Vehicle/Person Tracking
+
+Uses YOLOv8n for detection + tracking algorithms.
+
+```bash
+# IoU-based tracking (simple, fast)
+python test_vehicle_tracking.py --input test_videos/pedestrians.mp4 --tracker iou
+
+# ByteTrack tracking (handles occlusions better)
+python test_vehicle_tracking.py --input test_videos/pedestrians.mp4 --tracker bytetrack
 
 # Custom output path
-python test_yolov8n.py --input test_images/sample_cars.jpg --output my_output.jpg
+python test_vehicle_tracking.py --input video.mp4 --tracker bytetrack --output tracked_output.mp4
 ```
 
-**Features:**
-- Detects 80 different object classes
-- Processes images and videos
-- Generates annotated outputs with bounding boxes
-- Configurable confidence thresholds
+---
 
-### LPRNet License Plate Recognition
+## 📊 Available Models
+
+| Model | Alias | Type | Description |
+|-------|-------|------|-------------|
+| `yolov8n` | - | Object Detection | 80 COCO classes |
+| `face-detection-retail-0005` | `face` | Face Detection | Retail optimized |
+| `vehicle-license-plate-detection-barrier-0106` | `license_plate_detection`, `lp_detection` | LP Detection | Vehicle + plate |
+| `lprnet` | - | OCR | License plate text |
+| `person-reidentification-retail-0286` | `person_reid`, `reid` | Re-ID | Person appearance matching |
+
+### Model Aliases
+
+For convenience, you can use short aliases instead of full model names:
 
 ```bash
-# Test on image
-python test_lprnet.py --input test_images/sample_license_plate.jpg
+# These are equivalent:
+python test_runner.py --model face --input image.jpg
+python test_runner.py --model face-detection-retail-0005 --input image.jpg
 
-# Test on video
-python test_lprnet.py --input test_videos/sample_parking.mp4 --video
+# These are equivalent:
+python test_runner.py --model lp_detection --input image.jpg
+python test_runner.py --model vehicle-license-plate-detection-barrier-0106 --input image.jpg
 ```
 
-**Features:**
-- Recognizes license plate text
-- Handles multiple license plates per image
-- Processes video streams
-- Character-level confidence scoring
+---
 
-### Vehicle Detection and Tracking
+## 🐳 Docker API Testing
+
+Test the FastAPI-based AI inference service running in Docker.
+
+### Setup
 
 ```bash
-# Test on image
-python test_vehicle_tracking.py --input test_images/sample_vehicles.jpg
+# Build and run the Docker container
+cd services/ai-inference
+docker build -t ai-inference .
+docker run -d -p 8001:8001 --name ai-inference ai-inference
 
-# Test on video
-python test_vehicle_tracking.py --input test_videos/sample_traffic.mp4 --video
+# Verify it's running
+curl http://localhost:8001/health
 ```
 
-**Features:**
-- Detects vehicles (cars, trucks, buses, motorcycles, bicycles)
-- Tracks vehicles across video frames
-- Assigns unique track IDs
-- Color-coded tracking visualization
-
-## 📊 Model Configurations
-
-### YOLOv8n Configuration
-
-```json
-{
-  "model_name": "yolov8n",
-  "model_type": "object_detection",
-  "input_shape": [1, 3, 640, 640],
-  "classes": ["person", "bicycle", "car", "motorcycle", ...],
-  "confidence_threshold": 0.25,
-  "nms_threshold": 0.45
-}
-```
-
-### LPRNet Configuration
-
-```json
-{
-  "model_name": "lprnet",
-  "model_type": "license_plate_recognition",
-  "input_shape": [1, 3, 24, 94],
-  "classes": ["0", "1", "2", ..., "A", "B", "C", ...],
-  "confidence_threshold": 0.5,
-  "max_plate_length": 18
-}
-```
-
-### Vehicle Tracking Configuration
-
-```json
-{
-  "model_name": "vehicle_tracking",
-  "model_type": "vehicle_detection_and_tracking",
-  "input_shape": [1, 3, 416, 416],
-  "classes": ["car", "truck", "bus", "motorcycle", "bicycle", "person"],
-  "confidence_threshold": 0.3,
-  "tracking_threshold": 0.5,
-  "max_tracks": 50
-}
-```
-
-## 🔧 Advanced Usage
-
-### Custom Model Testing
-
-```python
-from test_runner import OpenVINOModelTester
-
-# Initialize tester
-tester = OpenVINOModelTester()
-
-# Load custom model
-model, config = tester.load_openvino_model("custom_model")
-
-# Run custom inference
-results = tester.run_custom_inference(input_data)
-```
-
-### Batch Processing
+### Run API Tests
 
 ```bash
-# Process multiple images
-for image in test_images/*.jpg; do
-    python test_runner.py --model yolov8n --input "$image"
-done
+cd tests
+
+# Run all API tests
+python test_api.py --all
+
+# Test against specific host/port
+python test_api.py --host localhost --port 8001
+
+# Test with specific image
+python test_api.py --image test_images/dog_bike_car.jpg
+
+# Run performance benchmark
+python test_api.py --benchmark --iterations 10
 ```
 
-### Performance Benchmarking
+### API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check |
+| `/models` | GET | List available models |
+| `/inference/detection` | POST | Object detection |
+| `/inference/direct` | POST | Raw model inference |
+
+### Example API Calls
 
 ```bash
-# Test inference speed
-python test_runner.py --model all --input test_images/sample_cars.jpg --benchmark
+# Health check
+curl http://localhost:8001/health
+
+# List models
+curl http://localhost:8001/models
+
+# Object detection
+curl -X POST "http://localhost:8001/inference/detection?object_name=car" \
+  -F "image=@test_images/sample.jpg"
+
+# Face detection
+curl -X POST "http://localhost:8001/inference/detection?object_name=face" \
+  -F "image=@test_images/people.jpg"
 ```
 
-## 📈 Output Examples
-
-### YOLOv8n Output
-- **Input**: `test_images/sample_cars.jpg`
-- **Output**: `output/yolov8n_detection_cars.jpg`
-- **Features**: Bounding boxes with class labels and confidence scores
-
-### LPRNet Output
-- **Input**: `test_images/sample_license_plate.jpg`
-- **Output**: `output/lprnet_recognition_plate.jpg`
-- **Features**: License plate regions with recognized text
-
-### Vehicle Tracking Output
-- **Input**: `test_videos/sample_traffic.mp4`
-- **Output**: `output/vehicle_tracking_traffic.mp4`
-- **Features**: Tracked vehicles with unique IDs and trajectories
+---
 
 ## 🛠 Troubleshooting
 
-### Common Issues
+| Issue | Solution |
+|-------|----------|
+| Model not found | Check `../models/<model_name>/` has `.xml` and `.bin` files |
+| Wrong class labels | Verify `model.json` has correct `classes` array |
+| Too many detections | Increase `confidence_threshold` in model config |
+| Tracking ID jumps | Lower `iou_threshold` or use ByteTrack |
+| Docker connection refused | Run `docker ps` to verify container is running |
+| Input shape mismatch | Model auto-detects NCHW vs NHWC format |
 
-1. **Model files not found**
-   ```bash
-   # Download missing models
-   python test_runner.py --download-models
-   ```
-
-2. **OpenVINO installation issues**
-   ```bash
-   # Reinstall OpenVINO
-   pip uninstall openvino
-   pip install openvino>=2023.0.0
-   ```
-
-3. **Memory issues**
-   ```bash
-   # Reduce batch size or image resolution
-   export OPENVINO_THREADS=4
-   ```
-
-### Performance Optimization
-
-1. **CPU Optimization**
-   ```bash
-   # Use CPU threading
-   export OPENVINO_THREADS=8
-   ```
-
-2. **Memory Management**
-   ```bash
-   # Limit memory usage
-   export OPENVINO_MEMORY_POOL_SIZE=1024
-   ```
-
-## 📝 Adding New Models
-
-1. **Create model directory**
-   ```bash
-   mkdir models/new_model
-   ```
-
-2. **Add model configuration**
-   ```json
-   {
-     "model_name": "new_model",
-     "model_type": "custom_type",
-     "input_shape": [1, 3, 224, 224],
-     "classes": ["class1", "class2"],
-     "confidence_threshold": 0.5
-   }
-   ```
-
-3. **Download model files**
-   ```bash
-   # Add download URLs to model.json
-   # Run: python test_runner.py --download-models
-   ```
-
-4. **Create test script**
-   ```python
-   # Copy and modify existing test script
-   cp test_yolov8n.py test_new_model.py
-   ```
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Add your model tests
-4. Update documentation
-5. Submit a pull request
+---
 
 ## 📄 License
 
-This testing suite is part of the Atriva AI project and follows the same licensing terms.
-
-## 🆘 Support
-
-For issues and questions:
-- Create an issue in the repository
-- Check the troubleshooting section
-- Review the OpenVINO documentation
-- Contact the development team
+Models from OpenVINO Model Zoo are under Apache-2.0 license.

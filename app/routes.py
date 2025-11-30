@@ -139,16 +139,17 @@ async def direct_inference(model_name: str, image: UploadFile = File(...)):
         # Load model and get input shape
         compiled_model, input_shape = model_manager.load_model(model_name)
         
-        # Preprocess image
-        preprocessed_image = preprocess_image(image_bytes, input_shape)
+        # Preprocess image (returns tuple: input_data, original_shape, ratio, pad)
+        preprocessed_result = preprocess_image(image_bytes, input_shape)
+        input_data = preprocessed_result[0]  # Extract just the input data
         
         # Run inference
-        output = run_inference(preprocessed_image, compiled_model)
+        output = run_inference(input_data, compiled_model)
         
         return {
             "model_name": model_name,
-            "input_shape": input_shape,
-            "output_shape": output.shape if hasattr(output, 'shape') else None,
+            "input_shape": list(input_shape) if hasattr(input_shape, '__iter__') else input_shape,
+            "output_shape": list(output.shape) if hasattr(output, 'shape') else None,
             "output": output.tolist() if hasattr(output, 'tolist') else str(output)
         }
         

@@ -1,0 +1,17 @@
+{
+  "model_name": "vehicle-license-plate-detection-barrier-0106",
+  "model_type": "license_plate_detection",
+  "output_format": "ssd",
+  "architecture": "openvino",
+  "input_shape": [1, 300, 300, 3],
+  "output_shape": [1, 1, 200, 7],
+  "precision": "FP32",
+  "classes": ["background", "vehicle", "license_plate"],
+  "confidence_threshold": 0.3,
+  "nms_threshold": 0.4,
+  "description": "Vehicle and license plate detection for barrier/gate scenarios",
+  "source": "OpenVINO Model Zoo",
+  "license": "Apache-2.0",
+  "version": "2023.0"
+}
+

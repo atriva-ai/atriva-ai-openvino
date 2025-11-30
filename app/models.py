@@ -11,12 +11,32 @@ ACCELERATORS = ["cpui8", "cpu16", "cpu32"]
 
 # Mapping user-friendly model names to actual OpenVINO models
 MODEL_NAME_MAPPING = {
-    "person": "person-detection-retail-0013",
-    "face": "face-detection-retail-0005",
+    # YOLOv8 models (80 COCO classes)
     "yolov8n": "yolov8n",
-    "license_plate": "yolov8n",  # Map license_plate to yolov8n model
-    "vehicle": "yolov8n",        # Map vehicle to yolov8n model
-    "car": "yolov8n"             # Map car to yolov8n model
+    "yolov8s": "yolov8s",
+    "yolov8m": "yolov8m",
+    # Convenience aliases for common detections (use YOLOv8n)
+    "vehicle": "yolov8n",
+    "car": "yolov8n",
+    "person": "yolov8n",
+    "object": "yolov8n",
+    # Face detection (OpenVINO Model Zoo)
+    "face-detection-retail-0005": "face-detection-retail-0005",
+    "face": "face-detection-retail-0005",
+    # Vehicle & License Plate Detection (OpenVINO Model Zoo)
+    "vehicle-license-plate-detection-barrier-0106": "vehicle-license-plate-detection-barrier-0106",
+    "license_plate_detection": "vehicle-license-plate-detection-barrier-0106",
+    # Text recognition (Western alphanumeric)
+    "text-recognition-0012": "text-recognition-0012",
+    "text_recognition": "text-recognition-0012",
+    "ocr": "text-recognition-0012",
+    # License plate recognition (Chinese - legacy)
+    "lprnet": "lprnet",
+    "license_plate": "lprnet",
+    # Person re-identification (for tracking)
+    "person-reidentification-retail-0286": "person-reidentification-retail-0286",
+    "person_reid": "person-reidentification-retail-0286",
+    "reid": "person-reidentification-retail-0286"
 }
 
 # OpenVINO Inference Engine Initialization
@@ -47,23 +67,22 @@ class ModelManager:
         if model_name not in MODEL_URLS:
             raise ValueError(f"❌ Unknown model: {requested_model}. Available: {list(MODEL_NAME_MAPPING.keys())}")
 
-        # Handle local YOLOv8 models
-        if model_name == "yolov8n":
-            return self._load_yolov8_model(model_name)
-        
-        """Load a model from local storage, or download if missing."""
-        model_folder = os.path.join(self.MODEL_DIR, model_name)
+        # All models are loaded from models/{model_name}/ directory
+        model_folder = os.path.join(self.BASE_DIR, model_name)
         xml_path = os.path.join(model_folder, f"{model_name}.xml")
         bin_path = os.path.join(model_folder, f"{model_name}.bin")
 
-        # ✅ Check if the model already exists
+        # Check if the model exists
         if os.path.exists(xml_path) and os.path.exists(bin_path):
             print(f"✅ Model {model_name} found locally in {model_folder}")
-             # Load the network model (XML & BIN)
+            
+            # Load the network model (XML & BIN)
             model = self.ie.read_model(model=xml_path)
 
             # Compile the model for inference
-            compiled_model = self.ie.compile_model(model=model, device_name="CPU")  # Change to "GPU" or "MYRIAD" if needed
+            compiled_model = self.ie.compile_model(model=model, device_name="CPU")
+            print(f"✅ Model {model_name} compiled successfully on device: CPU")
+            
             input_shape = compiled_model.input(0).shape  # Expected shape (N, C, H, W)
             return compiled_model, input_shape
 
@@ -71,48 +90,30 @@ class ModelManager:
         print(f"❌ Expected files: {xml_path}, {bin_path}")
         raise Exception(f"❌ Model {model_name} files not found. Please ensure model files are committed to the repository.")
 
-    def _load_yolov8_model(self, model_name):
-        """Load YOLOv8 model from local files."""
-        # YOLOv8 models are stored in models/yolov8n/ directory
-        model_folder = os.path.join(self.BASE_DIR, model_name)
-        xml_path = os.path.join(model_folder, f"{model_name}.xml")
-        bin_path = os.path.join(model_folder, f"{model_name}.bin")
-        
-        if not os.path.exists(xml_path) or not os.path.exists(bin_path):
-            raise Exception(f"❌ YOLOv8 model files not found in {model_folder}")
-        
-        print(f"✅ Loading YOLOv8 model from {model_folder}")
-        
-        # Load the network model (XML & BIN)
-        model = self.ie.read_model(model=xml_path)
-        
-        # Compile the model for inference
-        compiled_model = self.ie.compile_model(model=model, device_name="CPU")
-        print(f"✅ YOLOv8 model compiled successfully on device: CPU")
-        
-        input_shape = compiled_model.input(0).shape  # Expected shape (N, C, H, W)
-        return compiled_model, input_shape
-
     def get_model_config(self, requested_model):
         """Get model configuration including classes and thresholds."""
         model_name = MODEL_NAME_MAPPING.get(requested_model, requested_model)
         
-        if model_name == "yolov8n":
-            # Load YOLOv8 configuration from model.json
-            config_path = os.path.join(self.BASE_DIR, model_name, "model.json")
-            if os.path.exists(config_path):
-                with open(config_path, 'r') as f:
-                    config = json.load(f)
-                return config
-            else:
-                # Fallback configuration
-                return {
-                    "classes": ["Car", "Pedestrian", "Van", "Cyclist", "Truck", "Misc", "Tram", "Person_sitting"],
-                    "confidence_threshold": 0.25,
-                    "nms_threshold": 0.45
-                }
+        # Try to load configuration from model.json
+        config_path = os.path.join(self.BASE_DIR, model_name, "model.json")
+        if os.path.exists(config_path):
+            print(f"✅ Loading config from {config_path}")
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            return config
         
-        # For other models, return default configuration
+        # Fallback: try to get from model_capabilities
+        from app.model_capabilities import MODEL_CAPABILITIES
+        if model_name in MODEL_CAPABILITIES:
+            caps = MODEL_CAPABILITIES[model_name]
+            return {
+                "model_type": caps.get("type", "object_detection"),
+                "classes": caps.get("capabilities", {}).get("detection_classes", ["object"]),
+                "confidence_threshold": caps.get("capabilities", {}).get("confidence_threshold", 0.5),
+                "nms_threshold": caps.get("capabilities", {}).get("nms_threshold", 0.4)
+            }
+        
+        # Default fallback
         return {
             "classes": ["object"],
             "confidence_threshold": 0.3,
@@ -120,20 +121,22 @@ class ModelManager:
         }
 
     def list_models(self):
-        """List all available models for each accelerator."""
-        model_dict = {}
-
-        for acc in ACCELERATORS:
-            acc_dir = os.path.join(self.BASE_DIR, acc)
-            if os.path.exists(acc_dir):
-                model_dict[acc] = [
-                    model for model in os.listdir(acc_dir) 
-                    if os.path.isdir(os.path.join(acc_dir, model))
-                ]
-            else:
-                model_dict[acc] = []  # No models found for this accelerator
-
-        return model_dict
+        """List all available models."""
+        available_models = []
+        
+        # Check for model directories with model.json config files
+        if os.path.exists(self.BASE_DIR):
+            for model_name in os.listdir(self.BASE_DIR):
+                model_dir = os.path.join(self.BASE_DIR, model_name)
+                if os.path.isdir(model_dir):
+                    # Check if it has model files (xml/bin) or config
+                    xml_path = os.path.join(model_dir, f"{model_name}.xml")
+                    config_path = os.path.join(model_dir, "model.json")
+                    
+                    if os.path.exists(xml_path) or os.path.exists(config_path):
+                        available_models.append(model_name)
+        
+        return available_models
 
 # Global model manager instance
 model_manager = ModelManager(acceleration="cpu32")

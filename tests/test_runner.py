@@ -333,6 +333,241 @@ class OpenVINOModelTester:
             console.print(f"[red]❌ YOLOv8n test failed: {str(e)}[/red]")
             return False
     
+    def _recognize_license_plate(self, crop_image) -> str:
+        """Run text recognition on a cropped license plate using EasyOCR (best accuracy for Western plates)"""
+        try:
+            import easyocr
+            
+            # Initialize EasyOCR reader (lazy loading)
+            if not hasattr(self, '_ocr_reader'):
+                console.print("[cyan]   Loading EasyOCR...[/cyan]")
+                self._ocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False)
+            
+            # Run OCR on the crop
+            results = self._ocr_reader.readtext(crop_image, allowlist='0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ')
+            
+            if results:
+                # Get all detected text
+                texts = []
+                for (bbox, text, conf) in results:
+                    clean_text = ''.join(c for c in text.upper() if c.isalnum())
+                    if len(clean_text) >= 4:
+                        texts.append((clean_text, conf))
+                
+                if texts:
+                    best_text, best_conf = max(texts, key=lambda x: x[1])
+                    return f"{best_text} ({best_conf:.0%})"
+            
+            return "(no text detected)"
+                
+        except ImportError:
+            # Fallback to OpenVINO text-recognition-0012
+            console.print("[yellow]   EasyOCR not available, using OpenVINO text-recognition-0012...[/yellow]")
+            return self._recognize_plate_openvino(crop_image)
+        except Exception as e:
+            console.print(f"[yellow]   ⚠️ EasyOCR failed: {str(e)}, trying OpenVINO...[/yellow]")
+            return self._recognize_plate_openvino(crop_image)
+    
+    def _recognize_plate_openvino(self, crop_image) -> str:
+        """Fallback recognition using OpenVINO text-recognition-0012"""
+        try:
+            if not hasattr(self, '_text_rec_model'):
+                self._text_rec_model, _ = self.load_openvino_model("text-recognition-0012")
+            
+            # Convert to grayscale
+            if len(crop_image.shape) == 3:
+                gray = cv2.cvtColor(crop_image, cv2.COLOR_BGR2GRAY)
+            else:
+                gray = crop_image
+            
+            # Resize to 120x32 (model expects width=120, height=32)
+            resized = cv2.resize(gray, (120, 32))
+            
+            # Normalize to [0, 1] and reshape
+            normalized = resized.astype(np.float32) / 255.0
+            input_data = normalized.reshape(1, 32, 120, 1)
+            
+            # Run inference
+            result = self._text_rec_model(input_data)
+            outputs = result[self._text_rec_model.output(0)]
+            
+            # Decode CTC output [30, 1, 37]
+            chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ#"
+            predictions = outputs[:, 0, :]
+            
+            # Apply softmax for proper probabilities
+            exp_preds = np.exp(predictions - np.max(predictions, axis=1, keepdims=True))
+            probs = exp_preds / np.sum(exp_preds, axis=1, keepdims=True)
+            
+            indices = np.argmax(probs, axis=1)
+            
+            # CTC decode
+            plate_text = ""
+            prev_idx = -1
+            conf_sum = 0
+            conf_count = 0
+            for i, idx in enumerate(indices):
+                if idx != 36 and idx != prev_idx:  # 36 is blank
+                    if idx < len(chars) - 1:
+                        plate_text += chars[idx]
+                        conf_sum += probs[i, idx]
+                        conf_count += 1
+                prev_idx = idx
+            
+            if plate_text and conf_count > 0:
+                avg_conf = conf_sum / conf_count
+                return f"{plate_text} ({avg_conf:.0%}) [OpenVINO]"
+            
+            return "(no text detected)"
+        except Exception as e:
+            return f"(error: {str(e)})"
+    
+    def test_ssd_detection(self, model_name: str, input_path: str, output_path: str, classes: list) -> bool:
+        """Test SSD-style detection models (face detection, license plate detection)"""
+        console.print(f"[blue]Testing {model_name}...[/blue]")
+        
+        try:
+            model, config = self.load_openvino_model(model_name)
+            
+            # Load and preprocess image
+            image = cv2.imread(input_path)
+            if image is None:
+                raise ValueError(f"Could not load image: {input_path}")
+            
+            orig_h, orig_w = image.shape[:2]
+            console.print(f"[cyan]Original image size: {orig_w}x{orig_h}[/cyan]")
+            
+            # Get model input shape and determine format
+            model_input_shape = model.input(0).shape
+            console.print(f"[cyan]Model input shape: {model_input_shape}[/cyan]")
+            
+            # Determine if model expects NCHW or NHWC
+            if len(model_input_shape) == 4:
+                if model_input_shape[1] == 3:  # NCHW format
+                    input_h, input_w = model_input_shape[2], model_input_shape[3]
+                    is_nchw = True
+                else:  # NHWC format
+                    input_h, input_w = model_input_shape[1], model_input_shape[2]
+                    is_nchw = False
+            else:
+                input_h, input_w = 300, 300
+                is_nchw = True
+            
+            resized_image = cv2.resize(image, (input_w, input_h))
+            
+            # OpenVINO SSD models expect BGR format in [0, 255] range (NOT normalized RGB)
+            # Keep as BGR (OpenCV loads as BGR by default)
+            input_image = resized_image.astype(np.float32)
+            
+            # Format input data based on model expectation
+            if is_nchw:
+                input_data = np.transpose(input_image, (2, 0, 1))
+                input_data = np.expand_dims(input_data, axis=0)
+            else:
+                input_data = np.expand_dims(input_image, axis=0)
+            
+            console.print(f"[cyan]Input data shape: {input_data.shape}, range: [{input_data.min():.1f}, {input_data.max():.1f}][/cyan]")
+            
+            # Run inference
+            output_tensor = model.output(0)
+            result = model(input_data)
+            outputs = result[output_tensor]
+            
+            console.print(f"[green]✅ {model_name} inference completed. Output shape: {outputs.shape}[/green]")
+            
+            # Post-process SSD outputs
+            # Output shape is (1, 1, N, 7) where each detection is:
+            # [image_id, label, confidence, x_min, y_min, x_max, y_max]
+            conf_threshold = config.get("confidence_threshold", 0.5)
+            
+            # Debug: Show top detections by confidence
+            all_confs = [(outputs[0, 0, i, 2], outputs[0, 0, i, 1]) for i in range(outputs.shape[2])]
+            top_confs = sorted(all_confs, reverse=True)[:10]
+            console.print(f"[yellow]Top 10 raw confidences: {[(f'{c:.3f}', int(l)) for c, l in top_confs]}[/yellow]")
+            console.print(f"[yellow]Using confidence threshold: {conf_threshold}[/yellow]")
+            
+            detections = []
+            for detection in outputs[0, 0]:
+                _, label, conf, x_min, y_min, x_max, y_max = detection
+                
+                if conf > conf_threshold and int(label) > 0:  # Skip background (label 0)
+                    # Convert normalized coords to pixel coords
+                    x1 = int(x_min * orig_w)
+                    y1 = int(y_min * orig_h)
+                    x2 = int(x_max * orig_w)
+                    y2 = int(y_max * orig_h)
+                    
+                    # Clip to image boundaries
+                    x1, y1 = max(0, x1), max(0, y1)
+                    x2, y2 = min(orig_w, x2), min(orig_h, y2)
+                    
+                    class_id = int(label)
+                    class_name = classes[class_id] if class_id < len(classes) else f"class_{class_id}"
+                    
+                    detections.append({
+                        "class_id": class_id,
+                        "class_name": class_name,
+                        "confidence": float(conf),
+                        "bbox": [x1, y1, x2, y2]
+                    })
+            
+            console.print(f"[green]Found {len(detections)} detections[/green]")
+            
+            # Draw detections on image
+            output_image = image.copy()
+            colors = {
+                "face": (0, 255, 0),
+                "vehicle": (255, 0, 0),
+                "license_plate": (0, 255, 255),
+            }
+            
+            crop_idx = 0
+            for det in detections:
+                x1, y1, x2, y2 = det["bbox"]
+                class_name = det["class_name"]
+                conf = det["confidence"]
+                
+                color = colors.get(class_name, (0, 255, 0))
+                cv2.rectangle(output_image, (x1, y1), (x2, y2), color, 2)
+                
+                label_text = f"{class_name}: {conf:.2f}"
+                (text_w, text_h), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                cv2.rectangle(output_image, (x1, y1 - text_h - 10), (x1 + text_w, y1), color, -1)
+                cv2.putText(output_image, label_text, (x1, y1 - 5), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                
+                console.print(f"  {class_name}: {conf:.2f} @ [{x1}, {y1}, {x2}, {y2}]")
+                
+                # Save cropped license plates and run recognition
+                if class_name == "license_plate":
+                    crop = image[y1:y2, x1:x2]
+                    if crop.size > 0:
+                        crop_path = str(self.output_dir / f"license_plate_crop_{crop_idx}.jpg")
+                        cv2.imwrite(crop_path, crop)
+                        console.print(f"[cyan]   📷 Saved crop to: {crop_path} (size: {x2-x1}x{y2-y1})[/cyan]")
+                        
+                        # Run LPRNet recognition on the crop
+                        plate_text = self._recognize_license_plate(crop)
+                        if plate_text:
+                            console.print(f"[green]   🔤 Recognized plate: {plate_text}[/green]")
+                            # Draw plate text on output image
+                            cv2.putText(output_image, plate_text, (x1, y2 + 25), 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+                        
+                        crop_idx += 1
+            
+            # Save output
+            cv2.imwrite(output_path, output_image)
+            console.print(f"[green]✅ Saved output to: {output_path}[/green]")
+            
+            return True
+            
+        except Exception as e:
+            console.print(f"[red]❌ {model_name} test failed: {str(e)}[/red]")
+            import traceback
+            traceback.print_exc()
+            return False
+    
     def test_lprnet_recognition(self, input_path: str, output_path: str) -> bool:
         """Test LPRNet license plate recognition"""
         console.print("[blue]Testing LPRNet License Plate Recognition...[/blue]")
@@ -345,31 +580,75 @@ class OpenVINOModelTester:
             if image is None:
                 raise ValueError(f"Could not load image: {input_path}")
             
-            # Resize image to model input size
-            input_shape = config["input_shape"][2:]  # [24, 94]
-            resized_image = cv2.resize(image, input_shape)
+            orig_h, orig_w = image.shape[:2]
+            console.print(f"[cyan]Input image size: {orig_w}x{orig_h}[/cyan]")
             
-            # Convert BGR to RGB and normalize
-            rgb_image = cv2.cvtColor(resized_image, cv2.COLOR_BGR2RGB)
-            normalized_image = rgb_image.astype(np.float32) / 255.0
+            # Get model input shape: [1, 3, 24, 94] -> resize to (94, 24) (width, height)
+            model_input_shape = model.input(0).shape
+            console.print(f"[cyan]Model input shape: {model_input_shape}[/cyan]")
             
-            # Transpose to CHW format
+            input_h, input_w = model_input_shape[2], model_input_shape[3]  # 24, 94
+            resized_image = cv2.resize(image, (input_w, input_h))
+            
+            # Normalize to [0, 1] and convert to NCHW
+            normalized_image = resized_image.astype(np.float32) / 255.0
             input_data = np.transpose(normalized_image, (2, 0, 1))
             input_data = np.expand_dims(input_data, axis=0)
             
-            # Run inference
-            output_tensor = model.output(0)
+            console.print(f"[cyan]Input data shape: {input_data.shape}[/cyan]")
             
-            result = model(input_data)
+            # This model requires 2 inputs: data and seq_ind
+            # seq_ind is sequence indices for decoding
+            seq_ind = np.arange(88).reshape(88, 1).astype(np.float32)
+            
+            # Run inference with both inputs
+            output_tensor = model.output(0)
+            result = model({"data": input_data, "seq_ind": seq_ind})
             outputs = result[output_tensor]
             
-            # Process outputs (simplified - would need proper post-processing)
             console.print(f"[green]✅ LPRNet inference completed. Output shape: {outputs.shape}[/green]")
+            
+            # Decode output - shape is [1, 88, 1, 1]
+            # 88 classes: 0-9, Chinese provinces, A-Z, <blank>
+            logits = outputs.squeeze()  # Shape: (88,)
+            
+            # Character set for license-plate-recognition-barrier-0001
+            chars = "0123456789" + \
+                    "<Anhui><Beijing><Chongqing><Fujian><Gansu><Guangdong>" + \
+                    "<Guangxi><Guizhou><Hainan><Hebei><Heilongjiang><Henan>" + \
+                    "<HongKong><Hubei><Hunan><InnerMongolia><Jiangsu><Jiangxi>" + \
+                    "<Jilin><Liaoning><Macau><Ningxia><Qinghai><Shaanxi>" + \
+                    "<Shandong><Shanghai><Shanxi><Sichuan><Tianjin><Tibet>" + \
+                    "<Xinjiang><Yunnan><Zhejiang><police>" + \
+                    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+            
+            # Simple decoding - take top prediction
+            top_idx = np.argmax(logits)
+            top_conf = logits[top_idx]
+            
+            console.print(f"[yellow]Top 5 predictions:[/yellow]")
+            top5_indices = np.argsort(logits)[::-1][:5]
+            for idx in top5_indices:
+                if idx < 10:
+                    char = str(idx)
+                elif idx < 44:
+                    char = f"<Province_{idx-10}>"
+                elif idx < 70:
+                    char = chr(ord('A') + idx - 44)
+                else:
+                    char = "<blank>"
+                console.print(f"  [{idx}] {char}: {logits[idx]:.4f}")
+            
+            # Note: This model outputs single character - full plate recognition needs sequence model
+            console.print(f"[yellow]Note: This model is designed for Chinese license plates[/yellow]")
+            console.print(f"[yellow]      Output represents confidence per character class[/yellow]")
             
             # Save annotated image
             annotated_image = image.copy()
-            cv2.putText(annotated_image, "LPRNet Recognition", (10, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            # Scale up for better visibility
+            annotated_image = cv2.resize(annotated_image, (orig_w * 2, orig_h * 2))
+            cv2.putText(annotated_image, f"LPRNet Recognition", (10, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             
             cv2.imwrite(output_path, annotated_image)
             console.print(f"[green]✅ Saved annotated image: {output_path}[/green]")
@@ -378,6 +657,8 @@ class OpenVINOModelTester:
             
         except Exception as e:
             console.print(f"[red]❌ LPRNet test failed: {str(e)}[/red]")
+            import traceback
+            traceback.print_exc()
             return False
     
     def test_vehicle_tracking(self, input_path: str, output_path: str) -> bool:
@@ -545,24 +826,32 @@ class OpenVINOModelTester:
         is_video = input_path.lower().endswith(('.mp4', '.avi', '.mov', '.mkv'))
         
         if is_video:
-            # Test video processing
-            for model_name in ["yolov8n", "lprnet", "vehicle_tracking"]:
-                output_path = self.output_dir / f"{model_name}_video_output.mp4"
-                results[model_name] = self.test_video_processing(model_name, input_path, str(output_path))
+            # Test video processing (only YOLOv8n for now, others need specific handling)
+            output_path = self.output_dir / "yolov8n_video_output.mp4"
+            results["yolov8n"] = self.test_video_processing("yolov8n", input_path, str(output_path))
         else:
-            # Test image processing
+            # Test image processing - all detection models
             results["yolov8n"] = self.test_yolov8n_detection(input_path, 
                 str(self.output_dir / "yolov8n_detection.jpg"))
+            
+            results["face-detection"] = self.test_ssd_detection(
+                "face-detection-retail-0005", input_path, 
+                str(self.output_dir / "face_detection.jpg"),
+                ["background", "face"])
+            
+            results["lp-detection"] = self.test_ssd_detection(
+                "vehicle-license-plate-detection-barrier-0106", input_path, 
+                str(self.output_dir / "lp_detection.jpg"),
+                ["background", "vehicle", "license_plate"])
+            
             results["lprnet"] = self.test_lprnet_recognition(input_path, 
                 str(self.output_dir / "lprnet_recognition.jpg"))
-            results["vehicle_tracking"] = self.test_vehicle_tracking(input_path, 
-                str(self.output_dir / "vehicle_tracking.jpg"))
         
         return results
     
     def download_all_models(self) -> bool:
         """Download all models"""
-        models = ["yolov8n", "lprnet", "vehicle_tracking"]
+        models = AVAILABLE_MODELS
         success_count = 0
         
         for model_name in models:
@@ -572,10 +861,29 @@ class OpenVINOModelTester:
         console.print(f"[green]✅ Downloaded {success_count}/{len(models)} models successfully[/green]")
         return success_count == len(models)
 
+# Model aliases for convenience
+MODEL_ALIASES = {
+    "face": "face-detection-retail-0005",
+    "license_plate_detection": "vehicle-license-plate-detection-barrier-0106",
+    "lp_detection": "vehicle-license-plate-detection-barrier-0106",
+    "person_reid": "person-reidentification-retail-0286",
+    "reid": "person-reidentification-retail-0286",
+}
+
+# All available models
+AVAILABLE_MODELS = [
+    "yolov8n",
+    "face-detection-retail-0005",
+    "vehicle-license-plate-detection-barrier-0106",
+    "lprnet",
+    "person-reidentification-retail-0286",
+]
+
 def main():
     parser = argparse.ArgumentParser(description="OpenVINO AI Model Testing Suite")
-    parser.add_argument("--model", choices=["yolov8n", "lprnet", "vehicle_tracking", "all"], 
-                       default="all", help="Model to test")
+    model_choices = AVAILABLE_MODELS + list(MODEL_ALIASES.keys()) + ["all"]
+    parser.add_argument("--model", choices=model_choices, 
+                       default="all", help="Model to test (or alias: face, lp_detection, person_reid)")
     parser.add_argument("--input", type=str, help="Input image or video path")
     parser.add_argument("--output", type=str, help="Output path")
     parser.add_argument("--download-models", action="store_true", help="Download all models")
@@ -583,22 +891,26 @@ def main():
     
     args = parser.parse_args()
     
+    # Resolve model alias
+    model_name = MODEL_ALIASES.get(args.model, args.model)
+    
     tester = OpenVINOModelTester()
     
     if args.list_models:
         # List available models
         table = Table(title="Available Models")
         table.add_column("Model Name", style="cyan")
+        table.add_column("Alias", style="yellow")
         table.add_column("Type", style="magenta")
         table.add_column("Description", style="green")
         
-        models = ["yolov8n", "lprnet", "vehicle_tracking"]
-        for model_name in models:
+        for m in AVAILABLE_MODELS:
+            alias = next((k for k, v in MODEL_ALIASES.items() if v == m), "-")
             try:
-                config = tester.load_model_config(model_name)
-                table.add_row(model_name, config["model_type"], config["description"])
+                config = tester.load_model_config(m)
+                table.add_row(m, alias, config.get("model_type", "unknown"), config.get("description", ""))
             except FileNotFoundError:
-                table.add_row(model_name, "Unknown", "Config not found")
+                table.add_row(m, alias, "Unknown", "Config not found")
         
         console.print(table)
         return
@@ -616,7 +928,7 @@ def main():
         return
     
     # Run tests
-    if args.model == "all":
+    if model_name == "all":
         results = tester.run_all_tests(args.input)
         
         # Display results
@@ -624,32 +936,44 @@ def main():
         table.add_column("Model", style="cyan")
         table.add_column("Status", style="green")
         
-        for model_name, success in results.items():
+        for m, success in results.items():
             status = "✅ PASSED" if success else "❌ FAILED"
-            table.add_row(model_name, status)
+            table.add_row(m, status)
         
         console.print(table)
     else:
         # Test specific model
         is_video = args.input.lower().endswith(('.mp4', '.avi', '.mov', '.mkv'))
+        output_base = model_name.replace("-", "_")
         
         if is_video:
             # Video processing
-            output_path = args.output or f"output/{args.model}_video_output.mp4"
-            success = tester.test_video_processing(args.model, args.input, output_path)
+            output_path = args.output or f"output/{output_base}_video_output.mp4"
+            success = tester.test_video_processing(model_name, args.input, output_path)
         else:
-            # Image processing
-            if args.model == "yolov8n":
-                success = tester.test_yolov8n_detection(args.input, args.output or "output/yolov8n_output.jpg")
-            elif args.model == "lprnet":
-                success = tester.test_lprnet_recognition(args.input, args.output or "output/lprnet_output.jpg")
-            elif args.model == "vehicle_tracking":
-                success = tester.test_vehicle_tracking(args.input, args.output or "output/vehicle_tracking_output.jpg")
+            # Image processing based on model type
+            output_path = args.output or f"output/{output_base}_output.jpg"
+            
+            if model_name == "yolov8n":
+                success = tester.test_yolov8n_detection(args.input, output_path)
+            elif model_name == "lprnet":
+                success = tester.test_lprnet_recognition(args.input, output_path)
+            elif model_name == "face-detection-retail-0005":
+                success = tester.test_ssd_detection(model_name, args.input, output_path, ["background", "face"])
+            elif model_name == "vehicle-license-plate-detection-barrier-0106":
+                success = tester.test_ssd_detection(model_name, args.input, output_path, ["background", "vehicle", "license_plate"])
+            elif model_name == "person-reidentification-retail-0286":
+                console.print("[yellow]⚠️ Person re-ID model is for tracking, not standalone detection[/yellow]")
+                console.print("[yellow]   Use with person detection + tracking pipeline[/yellow]")
+                success = False
+            else:
+                console.print(f"[red]❌ Unknown model: {model_name}[/red]")
+                success = False
         
         if success:
-            console.print(f"[green]✅ {args.model} test completed successfully[/green]")
+            console.print(f"[green]✅ {model_name} test completed successfully[/green]")
         else:
-            console.print(f"[red]❌ {args.model} test failed[/red]")
+            console.print(f"[red]❌ {model_name} test failed[/red]")
 
 if __name__ == "__main__":
     main()

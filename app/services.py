@@ -20,8 +20,17 @@ def letterbox(img, new_shape=(640,640), color=(114,114,114)):
     padded = cv2.copyMakeBorder(resized, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)
     return padded, r, (left, top)
 
-def preprocess_image(image_bytes: bytes, input_shape: tuple):
-    """Preprocess image for YOLOv8 inference using letterbox"""
+def preprocess_image(image_bytes: bytes, input_shape: tuple, use_letterbox: bool = True):
+    """Preprocess image for inference
+    
+    Args:
+        image_bytes: Raw image bytes
+        input_shape: Model input shape (N, C, H, W)
+        use_letterbox: If True, use letterbox (YOLOv8). If False, use direct resize (SSD models)
+    
+    Returns:
+        Tuple of (input_data, original_shape, ratio, pad)
+    """
     _, _, h, w = input_shape  # Extract height and width from model shape
     target_shape = (w, h)  # Model expects (width, height)
 
@@ -34,8 +43,14 @@ def preprocess_image(image_bytes: bytes, input_shape: tuple):
     # Store original shape for postprocessing
     original_shape = image.shape
 
-    # Use letterbox resizing to preserve aspect ratio
-    resized_image, ratio, pad = letterbox(image, new_shape=target_shape)
+    if use_letterbox:
+        # Use letterbox resizing to preserve aspect ratio (YOLOv8)
+        resized_image, ratio, pad = letterbox(image, new_shape=target_shape)
+    else:
+        # Direct resize without letterbox (SSD models)
+        resized_image = cv2.resize(image, target_shape)
+        ratio = 1.0  # Will use normalized coords
+        pad = (0, 0)
     
     # Convert BGR to RGB
     rgb_image = cv2.cvtColor(resized_image, cv2.COLOR_BGR2RGB)
@@ -49,7 +64,7 @@ def preprocess_image(image_bytes: bytes, input_shape: tuple):
     
     print(f"Preprocessed input shape: {input_data.shape}")
     print(f"Original image shape: {original_shape}")
-    print(f"Letterbox ratio: {ratio}, pad: {pad}")
+    print(f"Letterbox: {use_letterbox}, ratio: {ratio}, pad: {pad}")
 
     return input_data, original_shape, ratio, pad
 
@@ -77,8 +92,14 @@ def run_inference(input_data, compiled_model):
 
     return output
 
-def postprocess_detections(outputs, original_shape, ratio, pad, classes, confidence_threshold=0.25):
-    """Postprocess YOLOv8 detections with proper coordinate transformation - matching test implementation"""
+def postprocess_detections(outputs, original_shape, ratio, pad, classes, confidence_threshold=0.25, nms_threshold=0.45, model_type="yolov8"):
+    """Postprocess detections with NMS and proper coordinate transformation
+    
+    Supports multiple output formats:
+    - YOLOv8 raw: (1, 84, 8400) - center format with class scores
+    - YOLOv8 NMS: (1, 6, N) - corner format with [x1, y1, x2, y2, score, class_id]
+    - SSD/OpenVINO: (1, 1, N, 7) - normalized coords [image_id, label, conf, xmin, ymin, xmax, ymax]
+    """
     detections = []
     
     # Get the output tensor
@@ -87,12 +108,54 @@ def postprocess_detections(outputs, original_shape, ratio, pad, classes, confide
     else:
         output_tensor = outputs
     
-    print(f"Processing output shape: {output_tensor.shape}")
+    print(f"Processing output shape: {output_tensor.shape}, model_type: {model_type}")
     
-    # Check if this is the NMS output format (like in the test) or raw YOLOv8 format
-    if len(output_tensor.shape) == 3 and output_tensor.shape[1] == 6:
-        # NMS output format: (1, 6, N) where each detection has [x1, y1, x2, y2, score, class_id]
-        print("Processing NMS output format")
+    orig_h, orig_w = original_shape[:2]
+    
+    # Detect output format based on shape
+    if len(output_tensor.shape) == 4 and output_tensor.shape[3] == 7:
+        # SSD/OpenVINO Model Zoo format: (1, 1, N, 7)
+        # Each detection: [image_id, label, confidence, x_min, y_min, x_max, y_max]
+        # Coordinates are normalized [0, 1]
+        print("Processing SSD/OpenVINO output format")
+        
+        for detection in output_tensor[0, 0]:
+            image_id, label, confidence, x_min, y_min, x_max, y_max = detection
+            
+            if confidence > confidence_threshold:
+                # Convert normalized coords to pixel coords
+                x1 = int(x_min * orig_w)
+                y1 = int(y_min * orig_h)
+                x2 = int(x_max * orig_w)
+                y2 = int(y_max * orig_h)
+                
+                # Clip to image boundaries
+                x1 = max(0, min(x1, orig_w - 1))
+                y1 = max(0, min(y1, orig_h - 1))
+                x2 = max(0, min(x2, orig_w - 1))
+                y2 = max(0, min(y2, orig_h - 1))
+                
+                # Get class name (label is 1-indexed for some models)
+                class_id = int(label)
+                if class_id < len(classes):
+                    class_name = classes[class_id]
+                elif class_id - 1 < len(classes) and class_id > 0:
+                    # Try 0-indexed
+                    class_name = classes[class_id - 1]
+                    class_id = class_id - 1
+                else:
+                    class_name = f"class_{class_id}"
+                
+                detections.append({
+                    "class_id": class_id,
+                    "class_name": class_name,
+                    "confidence": float(confidence),
+                    "bbox_xyxy": [x1, y1, x2, y2]
+                })
+    
+    elif len(output_tensor.shape) == 3 and output_tensor.shape[1] == 6:
+        # YOLOv8 NMS output format: (1, 6, N) where each detection has [x1, y1, x2, y2, score, class_id]
+        print("Processing YOLOv8 NMS output format")
         for i in range(output_tensor.shape[2]):
             x1, y1, x2, y2, score, class_id = output_tensor[0, :, i]
             
@@ -104,7 +167,6 @@ def postprocess_detections(outputs, original_shape, ratio, pad, classes, confide
                 y2 = (y2 - pad[1]) / ratio
                 
                 # Clip to image boundaries
-                orig_h, orig_w = original_shape[:2]
                 x1 = max(0, min(int(x1), orig_w - 1))
                 y1 = max(0, min(int(y1), orig_h - 1))
                 x2 = max(0, min(int(x2), orig_w - 1))
@@ -123,71 +185,100 @@ def postprocess_detections(outputs, original_shape, ratio, pad, classes, confide
                     "bbox_xyxy": [x1, y1, x2, y2]
                 })
     
-    else:
-        # Raw YOLOv8 format: (1, 84, 8400) or similar
-        print("Processing raw YOLOv8 output format")
-        # Process each detection
-        for i in range(output_tensor.shape[2]):  # 8400 detections
-            # Extract bbox coordinates (x_center, y_center, width, height)
-            x_center = output_tensor[0, 0, i]
-            y_center = output_tensor[0, 1, i]
-            width = output_tensor[0, 2, i]
-            height = output_tensor[0, 3, i]
+    elif len(output_tensor.shape) == 3:
+        # Raw YOLOv8 format: (1, 84, 8400) - need to apply NMS
+        print("Processing raw YOLOv8 output format with NMS")
+        
+        # Transpose to (8400, 84) for easier processing
+        predictions = output_tensor[0].T
+        
+        boxes = []
+        confidences = []
+        class_ids = []
+        
+        for pred in predictions:
+            # First 4 values: cx, cy, w, h
+            cx, cy, w, h = pred[:4]
+            # Remaining values: class scores
+            class_scores = pred[4:]
             
-            # Extract class scores
-            class_scores = output_tensor[0, 4:, i]
-            
-            # Get the best class
+            # Get best class
             class_id = np.argmax(class_scores)
             confidence = class_scores[class_id]
             
             if confidence > confidence_threshold:
                 # Convert from center format to corner format
-                x1 = x_center - width / 2
-                y1 = y_center - height / 2
-                x2 = x_center + width / 2
-                y2 = y_center + height / 2
+                x1 = cx - w / 2
+                y1 = cy - h / 2
                 
                 # Undo letterbox transformation
-                x1 = (x1 - pad[0]) / ratio
-                y1 = (y1 - pad[1]) / ratio
-                x2 = (x2 - pad[0]) / ratio
-                y2 = (y2 - pad[1]) / ratio
+                x1_orig = (x1 - pad[0]) / ratio
+                y1_orig = (y1 - pad[1]) / ratio
+                w_orig = w / ratio
+                h_orig = h / ratio
                 
-                # Clip to image boundaries
-                orig_h, orig_w = original_shape[:2]
-                x1 = max(0, min(int(x1), orig_w - 1))
-                y1 = max(0, min(int(y1), orig_h - 1))
-                x2 = max(0, min(int(x2), orig_w - 1))
-                y2 = max(0, min(int(y2), orig_h - 1))
-                
-                # Get class name
-                if class_id < len(classes):
-                    class_name = classes[class_id]
-                else:
-                    class_name = f"class_{class_id}"
-                
-                detections.append({
-                    "class_id": int(class_id),
-                    "class_name": class_name,
-                    "confidence": float(confidence),
-                    "bbox_xyxy": [x1, y1, x2, y2]
-                })
+                # Store as [x, y, w, h] for NMS
+                boxes.append([int(x1_orig), int(y1_orig), int(w_orig), int(h_orig)])
+                confidences.append(float(confidence))
+                class_ids.append(int(class_id))
+        
+        # Apply Non-Maximum Suppression
+        if len(boxes) > 0:
+            indices = cv2.dnn.NMSBoxes(boxes, confidences, confidence_threshold, nms_threshold)
+            
+            print(f"Before NMS: {len(boxes)}, After NMS: {len(indices) if len(indices) > 0 else 0}")
+            
+            if len(indices) > 0:
+                for i in indices.flatten():
+                    x, y, w, h = boxes[i]
+                    class_id = class_ids[i]
+                    
+                    # Clip to image boundaries
+                    x1 = max(0, min(x, orig_w - 1))
+                    y1 = max(0, min(y, orig_h - 1))
+                    x2 = max(0, min(x + w, orig_w - 1))
+                    y2 = max(0, min(y + h, orig_h - 1))
+                    
+                    # Get class name
+                    if class_id < len(classes):
+                        class_name = classes[class_id]
+                    else:
+                        class_name = f"class_{class_id}"
+                    
+                    detections.append({
+                        "class_id": class_id,
+                        "class_name": class_name,
+                        "confidence": confidences[i],
+                        "bbox_xyxy": [x1, y1, x2, y2]
+                    })
+    
+    else:
+        print(f"Unknown output format: {output_tensor.shape}")
     
     print(f"Found {len(detections)} detections")
     return detections
 
 def run_object_detection(image_bytes: bytes, object_name: str):
-    """Runs YOLOv8 inference using a dynamically selected model."""
-    compiled_model, input_shape = model_manager.load_model(object_name)  # Load requested model by object name like "yolov8n"
+    """Runs inference using a dynamically selected model (YOLOv8 or SSD)."""
+    compiled_model, input_shape = model_manager.load_model(object_name)
     
     # Get model configuration for classes and thresholds
     model_config = model_manager.get_model_config(object_name)
     classes = model_config.get("classes", [])
     confidence_threshold = model_config.get("confidence_threshold", 0.25)
+    nms_threshold = model_config.get("nms_threshold", 0.45)
+    model_type = model_config.get("model_type", "object_detection")
     
-    # Preprocess image for model input (returns additional info for postprocessing)
-    image_data, original_shape, ratio, pad = preprocess_image(image_bytes, input_shape)
+    # Determine preprocessing based on model type
+    # YOLOv8 uses letterbox, SSD/OpenVINO models use direct resize
+    use_letterbox = "yolo" in object_name.lower() or model_type == "object_detection"
+    if "face-detection" in object_name or "license-plate" in object_name or "barrier" in object_name:
+        use_letterbox = False
+    
+    print(f"Model: {object_name}, Type: {model_type}, Input shape: {input_shape}, Letterbox: {use_letterbox}")
+    
+    # Preprocess image for model input
+    image_data, original_shape, ratio, pad = preprocess_image(image_bytes, input_shape, use_letterbox)
 
     # Run inference
     model_output = run_inference(image_data, compiled_model)
@@ -199,7 +290,9 @@ def run_object_detection(image_bytes: bytes, object_name: str):
         ratio, 
         pad, 
         classes, 
-        confidence_threshold
+        confidence_threshold,
+        nms_threshold,
+        model_type
     )
 
     # Print results
@@ -207,3 +300,75 @@ def run_object_detection(image_bytes: bytes, object_name: str):
         print(f"Class: {det['class_name']} (ID: {det['class_id']}), Confidence: {det['confidence']:.3f}, BBox: {det['bbox_xyxy']}")
 
     return detections
+
+
+def recognize_text_openvino(image_bytes: bytes) -> dict:
+    """
+    Recognize text using OpenVINO text-recognition-0012 model.
+    Used for license plate recognition in Docker API (no EasyOCR dependency).
+    
+    Args:
+        image_bytes: Raw image bytes (cropped text region)
+    
+    Returns:
+        dict with 'text' and 'confidence'
+    """
+    try:
+        # Load text recognition model
+        compiled_model, input_shape = model_manager.load_model("text-recognition-0012")
+        
+        # Decode image
+        image_array = np.frombuffer(image_bytes, np.uint8)
+        image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+        
+        if image is None:
+            return {"text": "", "confidence": 0, "error": "Failed to decode image"}
+        
+        # Convert to grayscale
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        
+        # Resize to model input: [1, 32, 120, 1] -> (120, 32)
+        resized = cv2.resize(gray, (120, 32))
+        
+        # Normalize and reshape
+        normalized = resized.astype(np.float32) / 255.0
+        input_data = normalized.reshape(1, 32, 120, 1)
+        
+        # Run inference
+        result = compiled_model(input_data)
+        outputs = result[compiled_model.output(0)]
+        
+        # Decode CTC output [30, 1, 37]
+        chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ#"
+        predictions = outputs[:, 0, :]  # Shape: [30, 37]
+        
+        # Apply softmax
+        exp_preds = np.exp(predictions - np.max(predictions, axis=1, keepdims=True))
+        probs = exp_preds / np.sum(exp_preds, axis=1, keepdims=True)
+        
+        indices = np.argmax(probs, axis=1)
+        
+        # CTC decode: remove blanks and repeated characters
+        text = ""
+        conf_sum = 0
+        conf_count = 0
+        prev_idx = -1
+        
+        for i, idx in enumerate(indices):
+            if idx != 36 and idx != prev_idx:  # 36 is blank
+                if idx < len(chars) - 1:
+                    text += chars[idx]
+                    conf_sum += probs[i, idx]
+                    conf_count += 1
+            prev_idx = idx
+        
+        avg_conf = conf_sum / conf_count if conf_count > 0 else 0
+        
+        return {
+            "text": text,
+            "confidence": float(avg_conf),
+            "model": "text-recognition-0012"
+        }
+        
+    except Exception as e:
+        return {"text": "", "confidence": 0, "error": str(e)}
